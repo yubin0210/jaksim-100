@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { CameraIcon, RefreshIcon } from '@/components/Icons';
 import {
   captureFromStreamWithStamp,
   formatKstClock,
   paintWarmAmbientPreview,
 } from '@/lib/camera-adapter';
+import { isCameraShutterAllowed } from '@/lib/ui-guards';
 
 interface LiveCameraModalProps {
   open: boolean;
@@ -15,6 +17,9 @@ interface LiveCameraModalProps {
   onClose: () => void;
   onCapture: (payload: { imageData: string; note: string; timestampLabel: string }) => Promise<void>;
 }
+
+const ALLOW_CAMERA_FALLBACK =
+  process.env.NEXT_PUBLIC_ALLOW_CAMERA_FALLBACK === 'true';
 
 export function LiveCameraModal({
   open,
@@ -29,8 +34,14 @@ export function LiveCameraModal({
   const streamRef = useRef<MediaStream | null>(null);
 
   const [cameraMode, setCameraMode] = useState<'loading' | 'live' | 'fallback'>('loading');
+  const [retryCount, setRetryCount] = useState(0);
   const [note, setNote] = useState('');
   const [clock, setClock] = useState(() => formatKstClock());
+
+  const shutterAllowed = isCameraShutterAllowed({
+    cameraMode,
+    allowFallback: ALLOW_CAMERA_FALLBACK,
+  });
 
   useEffect(() => {
     if (!open) {
@@ -88,10 +99,10 @@ export function LiveCameraModal({
         streamRef.current = null;
       }
     };
-  }, [open]);
+  }, [open, retryCount]);
 
   useEffect(() => {
-    if (!open || cameraMode !== 'fallback') return;
+    if (!open || cameraMode !== 'fallback' || !ALLOW_CAMERA_FALLBACK) return;
     let rafId = 0;
     let phase = 0;
 
@@ -110,12 +121,14 @@ export function LiveCameraModal({
   if (!open) return null;
 
   const handleShutter = async () => {
-    if (submitting) return;
+    if (submitting || !shutterAllowed) return;
     const timestampLabel = formatKstClock();
     const imageData = captureFromStreamWithStamp(
       cameraMode === 'live' ? videoRef.current : null,
       { roomTitle, tag, timestampLabel },
-      cameraMode === 'fallback' ? previewCanvasRef.current : null
+      cameraMode === 'fallback' && ALLOW_CAMERA_FALLBACK
+        ? previewCanvasRef.current
+        : null
     );
     await onCapture({
       imageData,
@@ -209,19 +222,21 @@ export function LiveCameraModal({
             display: cameraMode === 'live' ? 'block' : 'none',
           }}
         />
-        <canvas
-          ref={previewCanvasRef}
-          width={600}
-          height={760}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: cameraMode === 'fallback' ? 'block' : 'none',
-          }}
-        />
+        {ALLOW_CAMERA_FALLBACK && (
+          <canvas
+            ref={previewCanvasRef}
+            width={600}
+            height={760}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: cameraMode === 'fallback' ? 'block' : 'none',
+            }}
+          />
+        )}
 
         {/* Corner focus brackets */}
         <span style={{ position: 'absolute', top: 12, left: 12, width: 18, height: 18, borderTop: '2px solid rgba(255,253,249,0.78)', borderLeft: '2px solid rgba(255,253,249,0.78)', borderRadius: '4px 0 0 0', zIndex: 3 }} />
@@ -250,7 +265,12 @@ export function LiveCameraModal({
               width: 7,
               height: 7,
               borderRadius: '50%',
-              background: cameraMode === 'live' ? '#EE6348' : '#F2A93B',
+              background:
+                cameraMode === 'live'
+                  ? '#EE6348'
+                  : ALLOW_CAMERA_FALLBACK
+                    ? '#F2A93B'
+                    : '#A89A8E',
             }}
           />
           <span>
@@ -258,9 +278,81 @@ export function LiveCameraModal({
               ? 'LIVE · 지금 찍는 사진만 업로드돼요'
               : cameraMode === 'loading'
                 ? '카메라 연결 중...'
-                : '카메라 미연결 · 프리뷰 스냅샷 모드'}
+                : ALLOW_CAMERA_FALLBACK
+                  ? '카메라 미연결 · 프리뷰 스냅샷 모드'
+                  : '카메라 권한 또는 기기 연결 필요'}
           </span>
         </div>
+
+        {cameraMode === 'fallback' && !ALLOW_CAMERA_FALLBACK && (
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 4,
+              margin: 'auto 8px',
+              background: 'rgba(255, 253, 249, 0.94)',
+              color: 'var(--ink-primary)',
+              borderRadius: '18px',
+              padding: '18px 16px',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '8px',
+              boxShadow: '0 12px 28px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <div
+              style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '50%',
+                background: 'var(--accent-coral-soft)',
+                color: 'var(--accent-coral)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <CameraIcon size={19} />
+            </div>
+            <div style={{ fontSize: '0.84rem', fontWeight: 800 }}>
+              실시간 카메라 연결이 필요해요
+            </div>
+            <div
+              style={{
+                fontSize: '0.71rem',
+                color: 'var(--ink-secondary)',
+                lineHeight: 1.45,
+              }}
+            >
+              허위 인증 방지를 위해 지금 촬영한 사진만 올릴 수 있어요.
+              브라우저 카메라 권한을 허용하거나 오늘 휴식권을 사용해 주세요.
+            </div>
+            <button
+              type="button"
+              onClick={() => setRetryCount(c => c + 1)}
+              style={{
+                marginTop: '4px',
+                border: 'none',
+                background: 'var(--accent-coral)',
+                color: '#fff',
+                fontFamily: 'inherit',
+                fontSize: '0.73rem',
+                fontWeight: 700,
+                padding: '7px 14px',
+                borderRadius: '999px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                cursor: 'pointer',
+              }}
+            >
+              <RefreshIcon size={13} />
+              <span>카메라 다시 연결</span>
+            </button>
+          </div>
+        )}
 
         <div style={{ position: 'relative', zIndex: 4 }}>
           <div
@@ -296,6 +388,7 @@ export function LiveCameraModal({
         onChange={e => setNote(e.target.value)}
         placeholder="오늘 남길 짧은 한마디 (예: 귀찮았지만 20분만 채움!)"
         maxLength={40}
+        disabled={!shutterAllowed}
         style={{
           width: '100%',
           background: 'rgba(255, 253, 249, 0.12)',
@@ -306,6 +399,7 @@ export function LiveCameraModal({
           fontFamily: 'inherit',
           fontSize: '0.8rem',
           outline: 'none',
+          opacity: shutterAllowed ? 1 : 0.55,
         }}
       />
 
@@ -313,16 +407,20 @@ export function LiveCameraModal({
         <button
           type="button"
           onClick={handleShutter}
-          disabled={submitting}
+          disabled={submitting || !shutterAllowed}
           aria-label="촬영하고 인증 올리기"
           style={{
             width: '62px',
             height: '62px',
             borderRadius: '50%',
-            border: '3px solid #FAF6F0',
+            border: `3px solid ${shutterAllowed ? '#FAF6F0' : 'rgba(250, 246, 240, 0.35)'}`,
             background: 'transparent',
             padding: '4px',
-            cursor: submitting ? 'wait' : 'pointer',
+            cursor: submitting
+              ? 'wait'
+              : shutterAllowed
+                ? 'pointer'
+                : 'not-allowed',
           }}
         >
           <div
@@ -330,7 +428,10 @@ export function LiveCameraModal({
               width: '100%',
               height: '100%',
               borderRadius: '50%',
-              background: submitting ? '#A89A8E' : 'var(--accent-coral)',
+              background:
+                submitting || !shutterAllowed
+                  ? '#75675C'
+                  : 'var(--accent-coral)',
             }}
           />
         </button>
@@ -342,7 +443,9 @@ export function LiveCameraModal({
           color: 'rgba(250, 246, 240, 0.68)',
         }}
       >
-        셔터를 누르면 실시간 타임스탬프와 함께 그룹 보드에 즉시 올라가요
+        {shutterAllowed
+          ? '셔터를 누르면 실시간 타임스탬프와 함께 그룹 보드에 즉시 올라가요'
+          : '실시간 카메라가 연결되면 셔터가 활성화돼요'}
       </div>
     </div>
   );

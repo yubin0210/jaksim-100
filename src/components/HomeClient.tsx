@@ -1,12 +1,15 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 import { BottomNav } from '@/components/BottomNav';
 import {
   CameraIcon,
   CheckIcon,
   CloudIcon,
   FlameIcon,
+  LogOutIcon,
   SproutIcon,
   SunIcon,
 } from '@/components/Icons';
@@ -16,9 +19,29 @@ import type { RoomSummary, WeekRhythmDay } from '@/types/ongi';
 interface HomeClientProps {
   initialMyRooms: RoomSummary[];
   weekRhythm: WeekRhythmDay[];
+  userNickname: string;
 }
 
-export function HomeClient({ initialMyRooms, weekRhythm }: HomeClientProps) {
+export function HomeClient({
+  initialMyRooms,
+  weekRhythm,
+  userNickname,
+}: HomeClientProps) {
+  const router = useRouter();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      router.push('/auth');
+      router.refresh();
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
   return (
     <>
       <div className="screen-scroll">
@@ -43,7 +66,7 @@ export function HomeClient({ initialMyRooms, weekRhythm }: HomeClientProps) {
               }}
             >
               <SunIcon size={13} style={{ color: 'var(--accent-coral)' }} />
-              <span>오늘도 수고한 하루</span>
+              <span>{userNickname} 님, 오늘도 수고했어요</span>
             </div>
             <h1
               style={{
@@ -61,24 +84,57 @@ export function HomeClient({ initialMyRooms, weekRhythm }: HomeClientProps) {
           </div>
           <div
             style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border-soft)',
-              borderRadius: '999px',
-              padding: '5px 11px',
-              fontSize: '0.72rem',
-              fontWeight: 700,
-              color: 'var(--ink-secondary)',
-              whiteSpace: 'nowrap',
-              boxShadow: '0 3px 8px rgba(68, 48, 34, 0.04)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+              gap: '5px',
+              flexShrink: 0,
             }}
           >
-            함께하는 방{' '}
-            <strong
-              className="serif-num"
-              style={{ color: 'var(--accent-coral)', fontSize: '0.84rem' }}
+            <div
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border-soft)',
+                borderRadius: '999px',
+                padding: '5px 11px',
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                color: 'var(--ink-secondary)',
+                whiteSpace: 'nowrap',
+                boxShadow: '0 3px 8px rgba(68, 48, 34, 0.04)',
+              }}
             >
-              {initialMyRooms.length}
-            </strong>
+              함께하는 방{' '}
+              <strong
+                className="serif-num"
+                style={{ color: 'var(--accent-coral)', fontSize: '0.84rem' }}
+              >
+                {initialMyRooms.length}
+              </strong>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={loggingOut}
+              aria-label="로그아웃"
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-soft)',
+                borderRadius: '999px',
+                padding: '3px 9px',
+                fontFamily: 'inherit',
+                fontSize: '0.64rem',
+                fontWeight: 700,
+                color: 'var(--ink-secondary)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                cursor: loggingOut ? 'wait' : 'pointer',
+              }}
+            >
+              <LogOutIcon size={11} />
+              <span>{loggingOut ? '나가는 중...' : '로그아웃'}</span>
+            </button>
           </div>
         </header>
 

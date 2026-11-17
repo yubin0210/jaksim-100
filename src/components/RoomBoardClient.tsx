@@ -12,6 +12,10 @@ import {
   HeartIcon,
 } from '@/components/Icons';
 import { LiveCameraModal } from '@/components/LiveCameraModal';
+import {
+  buildRoomBoardSlots,
+  resolveRoomBoardFooterState,
+} from '@/lib/ui-guards';
 import type { DailyCheckin, RoomDetailResponse } from '@/types/ongi';
 
 export function RoomBoardClient({
@@ -23,17 +27,48 @@ export function RoomBoardClient({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [joining, setJoining] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const isToday = detail.selectedDate === detail.today;
-  const checkinByMember = new Map<string, DailyCheckin>(
-    detail.checkins.map(c => [c.memberId, c])
-  );
+  const slots = buildRoomBoardSlots({
+    members: detail.members,
+    checkins: detail.checkins,
+    isToday,
+  });
+  const footerState = resolveRoomBoardFooterState({
+    isJoined: detail.isJoined,
+    memberCount: detail.members.length,
+    maxCapacity: detail.room.maxCapacity,
+    myStatusOnSelectedDate: detail.myStatusOnSelectedDate,
+    restPassesLeftThisWeek: detail.restPassesLeftThisWeek,
+    isToday,
+  });
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 2600);
+  };
+
+  const handleJoinFromPreview = async () => {
+    if (joining) return;
+    setJoining(true);
+    setErrorMsg(null);
+    try {
+      const res = await fetch(`/api/rooms/${detail.room.id}/join`, {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setErrorMsg(json.error || '방 참여에 실패했어요.');
+        return;
+      }
+      setDetail(json.room as RoomDetailResponse);
+      showToast('방에 함께하게 되었어요!');
+    } finally {
+      setJoining(false);
+    }
   };
 
   const handleSelectDate = async (dateStr: string) => {
@@ -293,8 +328,8 @@ export function RoomBoardClient({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            {detail.members.map(member => {
-              const ch = checkinByMember.get(member.id);
+            {slots.map(slot => {
+              const ch = slot.checkin;
               const bg = ch
                 ? ch.status === 'rest'
                   ? 'var(--accent-honey-soft)'
@@ -313,8 +348,8 @@ export function RoomBoardClient({
 
               return (
                 <span
-                  key={member.id}
-                  title={member.nickname}
+                  key={slot.key}
+                  title={slot.nickname}
                   style={{
                     width: '23px',
                     height: '23px',
@@ -329,7 +364,7 @@ export function RoomBoardClient({
                     border,
                   }}
                 >
-                  {ch ? (ch.status === 'rest' ? '쉼' : <CheckIcon size={11} />) : member.avatarInitial}
+                  {ch ? (ch.status === 'rest' ? '쉼' : <CheckIcon size={11} />) : slot.avatarInitial}
                 </span>
               );
             })}
@@ -374,8 +409,8 @@ export function RoomBoardClient({
           ...gridLayoutStyle,
         }}
       >
-        {detail.members.map((member, idx) => {
-          const checkin = checkinByMember.get(member.id);
+        {slots.map((slot, idx) => {
+          const checkin = slot.checkin;
           const spanTwo = detail.layoutMode === 'split-3' && idx === 0;
           const tileWrapperStyle: React.CSSProperties = {
             gridColumn: spanTwo ? 'span 2' : undefined,
@@ -385,7 +420,7 @@ export function RoomBoardClient({
           if (checkin && checkin.status === 'photo') {
             return (
               <div
-                key={member.id}
+                key={slot.key}
                 style={{
                   ...tileWrapperStyle,
                   position: 'relative',
@@ -400,7 +435,7 @@ export function RoomBoardClient({
                 {checkin.imageData && (
                   <img
                     src={checkin.imageData}
-                    alt={`${member.nickname}의 인증 사진`}
+                    alt={`${slot.nickname}의 인증 사진`}
                     style={{
                       position: 'absolute',
                       inset: 0,
@@ -441,12 +476,12 @@ export function RoomBoardClient({
                       borderRadius: '999px',
                     }}
                   >
-                    {member.isCurrentUser ? '나' : member.nickname}
+                    {slot.isCurrentUser ? '나' : slot.nickname}
                   </span>
                   <button
                     type="button"
                     onClick={() => handleToggleLike(checkin.id)}
-                    aria-label={`${member.nickname} 인증 좋아요`}
+                    aria-label={`${slot.nickname} 인증 좋아요`}
                     style={{
                       background: checkin.likedByMe
                         ? 'var(--accent-coral)'
@@ -513,7 +548,7 @@ export function RoomBoardClient({
           if (checkin && checkin.status === 'rest') {
             return (
               <div
-                key={member.id}
+                key={slot.key}
                 style={{
                   ...tileWrapperStyle,
                   borderRadius: '19px',
@@ -543,7 +578,7 @@ export function RoomBoardClient({
                   <CloudIcon size={18} />
                 </div>
                 <div style={{ fontSize: '0.74rem', fontWeight: 800, color: '#6B4911' }}>
-                  {member.isCurrentUser ? '오늘은 쉬어가는 날' : `${member.nickname} 님 휴식`}
+                  {slot.isCurrentUser ? '오늘은 쉬어가는 날' : `${slot.nickname} 님 휴식`}
                 </div>
                 <div style={{ fontSize: '0.64rem', color: '#8F6929', lineHeight: 1.3 }}>
                   휴식 스티커로 연속 흐름 유지 중
@@ -553,10 +588,10 @@ export function RoomBoardClient({
           }
 
           // Empty slot for me today -> interactive camera card
-          if (member.isCurrentUser && isToday) {
+          if (slot.isCurrentUser && isToday) {
             return (
               <button
-                key={member.id}
+                key={slot.key}
                 type="button"
                 onClick={() => setCameraOpen(true)}
                 style={{
@@ -601,7 +636,7 @@ export function RoomBoardClient({
 
           return (
             <div
-              key={member.id}
+              key={slot.key}
               style={{
                 ...tileWrapperStyle,
                 borderRadius: '19px',
@@ -617,7 +652,7 @@ export function RoomBoardClient({
               }}
             >
               <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--ink-secondary)' }}>
-                {member.isCurrentUser ? '이날은 비어 있어요' : `${member.nickname} 님 기다리는 중`}
+                {slot.isCurrentUser ? '이날은 비어 있어요' : `${slot.nickname} 님 기다리는 중`}
               </div>
               <div style={{ fontSize: '0.64rem', color: 'var(--ink-muted)' }}>
                 {isToday ? '곧 도착할 거예요' : '기록 없음'}
@@ -706,23 +741,53 @@ export function RoomBoardClient({
             fontWeight: 500,
           }}
         >
-          {detail.myStatusOnSelectedDate === 'photo'
-            ? '오늘의 내 조각을 남겼어요! 내 앨범에도 저장됐어요'
-            : detail.myStatusOnSelectedDate === 'rest'
-              ? '오늘은 가볍게 숨을 고르고 내일 다시 만나요'
-              : '내 사진이 올라오면 오늘의 합동 포스터가 완성돼요'}
+          {footerState === 'joinable-preview'
+            ? '이 방에 빈자리가 있어요. 함께 인증을 시작해 볼까요?'
+            : footerState === 'full-preview'
+              ? '정원이 모두 찬 방이에요 (미리보기 중)'
+              : footerState === 'past-readonly'
+                ? '지난 날짜의 합동 포스터 기록을 보고 있어요'
+                : footerState === 'member-photo-done'
+                  ? '오늘의 내 조각을 남겼어요! 내 앨범에도 저장됐어요'
+                  : footerState === 'member-rest-done'
+                    ? '오늘은 가볍게 숨을 고르고 내일 다시 만나요'
+                    : '내 사진이 올라오면 오늘의 합동 포스터가 완성돼요'}
         </div>
 
-        {isToday && detail.myStatusOnSelectedDate === 'pending' && (
+        {footerState === 'joinable-preview' && (
           <button
             type="button"
-            disabled={submitting || detail.restPassesLeftThisWeek === 0}
+            disabled={joining}
+            onClick={handleJoinFromPreview}
+            style={{
+              border: 'none',
+              background: 'var(--accent-coral)',
+              color: '#fff',
+              fontFamily: 'inherit',
+              fontSize: '0.73rem',
+              fontWeight: 700,
+              padding: '8px 14px',
+              borderRadius: '999px',
+              cursor: joining ? 'wait' : 'pointer',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 4px 10px rgba(238, 99, 72, 0.25)',
+            }}
+          >
+            {joining ? '참여 중...' : '함께하기'}
+          </button>
+        )}
+
+        {(footerState === 'member-pending-rest-available' ||
+          footerState === 'member-pending-rest-used') && (
+          <button
+            type="button"
+            disabled={submitting || footerState === 'member-pending-rest-used'}
             onClick={handleRestPass}
             style={{
               background: 'var(--surface)',
               border: '1px solid var(--border-soft)',
               color:
-                detail.restPassesLeftThisWeek === 0
+                footerState === 'member-pending-rest-used'
                   ? 'var(--ink-muted)'
                   : 'var(--ink-secondary)',
               fontFamily: 'inherit',
@@ -734,14 +799,16 @@ export function RoomBoardClient({
               alignItems: 'center',
               gap: '5px',
               cursor:
-                detail.restPassesLeftThisWeek === 0 ? 'not-allowed' : 'pointer',
+                footerState === 'member-pending-rest-used'
+                  ? 'not-allowed'
+                  : 'pointer',
               whiteSpace: 'nowrap',
               boxShadow: '0 3px 8px rgba(68, 48, 34, 0.05)',
             }}
           >
             <CloudIcon size={13} />
             <span>
-              {detail.restPassesLeftThisWeek > 0
+              {footerState === 'member-pending-rest-available'
                 ? '오늘은 쉬어가기'
                 : '이번 주 휴식권 사용됨'}
             </span>
