@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { getTodayKst, shiftDate } from '@/lib/domain';
 import { buildSeedRooms } from '@/lib/seed-data';
 
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+const getBuiltin = (
+  process as NodeJS.Process & {
+    getBuiltinModule: (id: string) => typeof import('node:sqlite');
+  }
+).getBuiltinModule;
+const { DatabaseSync } = getBuiltin('node:sqlite');
 
 interface GlobalDbHolder {
   __ongiDbState?: {

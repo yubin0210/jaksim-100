@@ -756,7 +756,11 @@ export function getAlbumEntries(params?: {
   return {
     month,
     availableMonths,
-    rooms: roomRows,
+    rooms: roomRows.map(r => ({
+      id: r.id,
+      title: r.title,
+      tag: r.tag,
+    })),
     entries,
   };
 }
