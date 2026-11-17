@@ -1,6 +1,4 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
-import { getDb } from '@/lib/db';
 import {
   computeCompletionStats,
   computeNextMemberStreak,
@@ -12,9 +10,11 @@ import {
   shiftDate,
   sortExploreRooms,
 } from '@/lib/domain';
+import { createSupabaseOngiStore } from '@/lib/store-supabase';
 import type {
   AlbumEntry,
   AlbumResponse,
+  CheckinStatus,
   DailyCheckin,
   InspirationSnippet,
   PreviewTile,
@@ -23,164 +23,120 @@ import type {
   RoomDetailResponse,
   RoomMember,
   RoomSummary,
+  UserProfile,
   WeekRhythmDay,
 } from '@/types/ongi';
 
-interface RoomRow {
-  id: string;
-  title: string;
-  tag: string;
-  category: string;
-  max_capacity: number;
-  streak_days: number;
-  last_completed_date: string | null;
-  created_at: string;
+export interface OngiStore {
+  listAllRooms(): Promise<Room[]>;
+  getRoomById(roomId: string): Promise<Room | null>;
+  createRoomWithHost(params: {
+    room: Room;
+    hostMember: Omit<RoomMember, 'isCurrentUser'>;
+    createdBy: string;
+  }): Promise<void>;
+  listActiveMembers(
+    roomId: string | undefined,
+    currentUserId: string
+  ): Promise<RoomMember[]>;
+  applyEviction(params: {
+    roomId: string;
+    evictedIds: string[];
+    newHostMemberId: string | null;
+  }): Promise<void>;
+  joinRoomAtomic(params: {
+    roomId: string;
+    memberId: string;
+    user: UserProfile;
+    today: string;
+  }): Promise<{ ok: true } | { ok: false; status: 404 | 409; error: string }>;
+  listCheckinsForRoomsDate(params: {
+    roomIds: string[];
+    dateStr: string;
+    currentUserId: string;
+  }): Promise<DailyCheckin[]>;
+  listCheckinDatesForRoom(roomId: string): Promise<string[]>;
+  countRestPassesUsedInRange(params: {
+    roomId: string;
+    userId: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<number>;
+  hasUserCheckinOnDate(params: {
+    roomId: string;
+    userId: string;
+    dateStr: string;
+  }): Promise<boolean>;
+  listUserActiveDatesInRange(params: {
+    userId: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<string[]>;
+  uploadCheckinImage(params: {
+    userId: string;
+    roomId: string;
+    checkinId: string;
+    bytes: Uint8Array;
+    contentType: string;
+    ext: string;
+  }): Promise<string>;
+  insertCheckin(params: {
+    id: string;
+    roomId: string;
+    memberId: string;
+    userId: string;
+    authorNickname: string;
+    authorAvatarInitial: string;
+    checkinDate: string;
+    status: CheckinStatus;
+    imageData: string | null;
+    note: string;
+    timestampLabel: string;
+    createdAt: string;
+  }): Promise<{ ok: true } | { ok: false; status: 409; error: string }>;
+  applyCheckinStreak(params: {
+    roomId: string;
+    memberId: string;
+    memberStreakDays: number;
+    today: string;
+    roomStreakDays: number;
+    lastCompletedDate: string | null;
+  }): Promise<void>;
+  toggleLike(params: {
+    checkinId: string;
+    userId: string;
+  }): Promise<
+    { ok: true; checkin: DailyCheckin } | { ok: false; status: 404; error: string }
+  >;
+  listUserAlbumData(params: {
+    userId: string;
+    month: string;
+    roomId?: string;
+  }): Promise<{
+    availableMonths: string[];
+    rooms: { id: string; title: string; tag: string }[];
+    entries: AlbumEntry[];
+  }>;
+  listSameTagSnippets(params: {
+    excludeRoomId: string;
+    tag: string;
+    category: string;
+    today: string;
+  }): Promise<InspirationSnippet[]>;
 }
 
-interface MemberRow {
-  id: string;
-  room_id: string;
-  user_id: string;
-  nickname: string;
-  avatar_initial: string;
-  is_current_user: number;
-  is_host: number;
-  member_streak_days: number;
-  last_active_date: string;
-  joined_at: string;
+const g = globalThis as unknown as { __ongiTestStoreOverride?: OngiStore };
+
+export function setTestStoreOverride(store: OngiStore | undefined): void {
+  g.__ongiTestStoreOverride = store;
 }
 
-interface CheckinRow {
-  id: string;
-  room_id: string;
-  member_id: string;
-  member_nickname: string;
-  member_avatar_initial: string;
-  is_current_user: number;
-  checkin_date: string;
-  status: 'photo' | 'rest';
-  image_data: string | null;
-  note: string;
-  timestamp_label: string;
-  likes_count: number;
-  liked_by_me: number;
-  created_at: string;
+export function resetTestStoreOverride(): void {
+  g.__ongiTestStoreOverride = undefined;
 }
 
-function mapRoom(row: RoomRow): Room {
-  return {
-    id: row.id,
-    title: row.title,
-    tag: row.tag,
-    category: row.category,
-    maxCapacity: row.max_capacity as RoomCapacity,
-    streakDays: row.streak_days,
-    lastCompletedDate: row.last_completed_date,
-    createdAt: row.created_at,
-  };
-}
-
-function mapMember(row: MemberRow): RoomMember {
-  return {
-    id: row.id,
-    roomId: row.room_id,
-    userId: row.user_id,
-    nickname: row.nickname,
-    avatarInitial: row.avatar_initial,
-    isCurrentUser: row.is_current_user === 1,
-    isHost: row.is_host === 1,
-    memberStreakDays: row.member_streak_days,
-    lastActiveDate: row.last_active_date,
-    joinedAt: row.joined_at,
-  };
-}
-
-function mapCheckin(row: CheckinRow): DailyCheckin {
-  return {
-    id: row.id,
-    roomId: row.room_id,
-    memberId: row.member_id,
-    memberNickname: row.member_nickname,
-    memberAvatarInitial: row.member_avatar_initial,
-    isCurrentUser: row.is_current_user === 1,
-    checkinDate: row.checkin_date,
-    status: row.status,
-    imageData: row.image_data,
-    note: row.note,
-    timestampLabel: row.timestamp_label,
-    likesCount: row.likes_count,
-    likedByMe: row.liked_by_me === 1,
-    createdAt: row.created_at,
-  };
-}
-
-function getRoomMembers(db: DatabaseSyncType, roomId: string): RoomMember[] {
-  const rows = db
-    .prepare(
-      `SELECT id, room_id, user_id, nickname, avatar_initial, is_current_user, is_host, member_streak_days, last_active_date, joined_at
-       FROM room_members WHERE room_id = ? ORDER BY is_current_user ASC, joined_at ASC`
-    )
-    .all(roomId) as unknown as MemberRow[];
-  return rows.map(mapMember);
-}
-
-function syncRoomEvictions(db: DatabaseSyncType, roomId: string, today: string): RoomMember[] {
-  const members = getRoomMembers(db, roomId);
-  if (members.length <= 1) return members;
-
-  const { evictedIds, newHostMemberId, kept } = evaluateInactiveEvictions({
-    members,
-    today,
-    protectCurrentUser: true,
-  });
-
-  if (evictedIds.length === 0) return members;
-
-  const delStmt = db.prepare('DELETE FROM room_members WHERE id = ?');
-  for (const id of evictedIds) {
-    delStmt.run(id);
-  }
-  if (newHostMemberId) {
-    db.prepare('UPDATE room_members SET is_host = 1 WHERE id = ?').run(newHostMemberId);
-  }
-  return kept;
-}
-
-function getCheckinsForRoomDate(
-  db: DatabaseSyncType,
-  roomId: string,
-  dateStr: string
-): DailyCheckin[] {
-  const rows = db
-    .prepare(
-      `SELECT c.id, c.room_id, c.member_id, m.nickname AS member_nickname, m.avatar_initial AS member_avatar_initial,
-              m.is_current_user, c.checkin_date, c.status, c.image_data, c.note, c.timestamp_label,
-              c.likes_count, c.liked_by_me, c.created_at
-       FROM daily_checkins c
-       JOIN room_members m ON m.id = c.member_id
-       WHERE c.room_id = ? AND c.checkin_date = ?
-       ORDER BY m.is_current_user ASC, c.created_at ASC`
-    )
-    .all(roomId, dateStr) as unknown as CheckinRow[];
-  return rows.map(mapCheckin);
-}
-
-function countRestPassesUsedThisWeek(
-  db: DatabaseSyncType,
-  roomId: string,
-  memberId: string,
-  today: string
-): number {
-  const monday = getMondayOfWeek(today);
-  const sunday = shiftDate(monday, 6);
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count FROM daily_checkins
-       WHERE room_id = ? AND member_id = ? AND status = 'rest'
-         AND checkin_date >= ? AND checkin_date <= ?`
-    )
-    .get(roomId, memberId, monday, sunday) as { count: number };
-  return row.count;
+function resolveStore(storeOverride?: OngiStore): OngiStore {
+  return storeOverride ?? g.__ongiTestStoreOverride ?? createSupabaseOngiStore();
 }
 
 function inferCategory(title: string, tag: string, explicit?: string): string {
@@ -210,111 +166,162 @@ function formatCurrentTimeLabel(): string {
   return `${h12}:${m} ${ampm}`;
 }
 
-function getSameTagInspiration(
-  db: DatabaseSyncType,
-  room: Room,
-  today: string
-): InspirationSnippet[] {
-  const rows = db
-    .prepare(
-      `SELECT c.id, r.title AS room_title, r.tag, m.nickname, c.image_data, c.note, c.timestamp_label
-       FROM daily_checkins c
-       JOIN rooms r ON r.id = c.room_id
-       JOIN room_members m ON m.id = c.member_id
-       WHERE c.room_id != ? AND c.status = 'photo' AND c.image_data IS NOT NULL
-       ORDER BY
-         CASE WHEN r.tag = ? THEN 0 WHEN r.category = ? THEN 1 ELSE 2 END,
-         CASE WHEN c.checkin_date = ? THEN 0 ELSE 1 END,
-         c.created_at DESC
-       LIMIT 4`
-    )
-    .all(room.id, room.tag, room.category, today) as {
-      id: string;
-      room_title: string;
-      tag: string;
-      nickname: string;
-      image_data: string;
-      note: string;
-      timestamp_label: string;
-    }[];
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 
-  return rows.map(r => ({
-    id: r.id,
-    roomTitle: r.room_title,
-    tag: r.tag,
-    nickname: r.nickname,
-    imageData: r.image_data,
-    note: r.note,
-    timestampLabel: r.timestamp_label,
-  }));
+export function parseCheckinImageData(
+  imageData: string
+): { bytes: Uint8Array; contentType: string; ext: string } | null {
+  const trimmed = imageData.trim();
+  const match = /^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(
+    trimmed
+  );
+  if (!match) return null;
+
+  const rawMime = match[1];
+  const base64Body = match[2];
+  const bytes = Buffer.from(base64Body, 'base64');
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
+    return null;
+  }
+
+  const contentType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+  const ext =
+    contentType === 'image/png'
+      ? 'png'
+      : contentType === 'image/webp'
+        ? 'webp'
+        : 'jpg';
+
+  return { bytes: new Uint8Array(bytes), contentType, ext };
 }
 
-function buildRoomSummary(
-  db: DatabaseSyncType,
-  roomRow: RoomRow,
+async function syncRoomEvictions(
+  store: OngiStore,
+  roomId: string,
+  members: RoomMember[],
   today: string
-): RoomSummary {
-  const room = mapRoom(roomRow);
-  const members = syncRoomEvictions(db, room.id, today);
-  const checkins = getCheckinsForRoomDate(db, room.id, today);
-  const me = members.find(m => m.isCurrentUser);
-  const myCheckin = me ? checkins.find(c => c.memberId === me.id) : undefined;
+): Promise<RoomMember[]> {
+  if (members.length <= 1) return members;
 
-  const stats = computeCompletionStats(members.length, checkins.length);
-  const streakInfo = computeNextRoomStreak({
-    currentStreak: room.streakDays,
-    lastCompletedDate: room.lastCompletedDate,
+  const { evictedIds, newHostMemberId, kept } = evaluateInactiveEvictions({
+    members,
     today,
-    isRoomCompleteToday: stats.isComplete,
+    protectCurrentUser: false,
   });
 
-  const checkinByMember = new Map(checkins.map(c => [c.memberId, c]));
-  const previewTiles: PreviewTile[] = members.map(m => {
-    const ch = checkinByMember.get(m.id);
-    if (!ch) return { status: 'empty', imageData: null, nickname: m.nickname };
-    return {
-      status: ch.status,
-      imageData: ch.imageData,
-      nickname: m.nickname,
-    };
+  if (evictedIds.length === 0) return members;
+
+  await store.applyEviction({
+    roomId,
+    evictedIds,
+    newHostMemberId,
   });
 
-  const restUsed = me ? countRestPassesUsedThisWeek(db, room.id, me.id, today) : 0;
-
-  return {
-    id: room.id,
-    title: room.title,
-    tag: room.tag,
-    category: room.category,
-    maxCapacity: room.maxCapacity,
-    memberCount: members.length,
-    streakDays: streakInfo.streakDays,
-    completedCount: stats.completedCount,
-    completionPercent: stats.percent,
-    myStatusToday: myCheckin ? myCheckin.status : 'pending',
-    isJoined: Boolean(me),
-    restPassesLeftThisWeek: Math.max(0, 1 - restUsed),
-    previewTiles,
-  };
+  return kept;
 }
 
-export function listRoomsOverview(params?: {
-  today?: string;
-  query?: string;
-  filter?: string;
-}): {
+export async function listRoomsOverview(
+  user: UserProfile,
+  params?: { today?: string; query?: string; filter?: string },
+  storeOverride?: OngiStore
+): Promise<{
   myRooms: RoomSummary[];
   exploreRooms: RoomSummary[];
   weekRhythm: WeekRhythmDay[];
-} {
+}> {
+  const store = resolveStore(storeOverride);
   const today = params?.today || getTodayKst();
-  const db = getDb(today);
 
-  const allRows = db
-    .prepare('SELECT * FROM rooms ORDER BY created_at DESC')
-    .all() as unknown as RoomRow[];
+  const [allRooms, allMembers] = await Promise.all([
+    store.listAllRooms(),
+    store.listActiveMembers(undefined, user.id),
+  ]);
 
-  const summaries = allRows.map(r => buildRoomSummary(db, r, today));
+  const roomIds = allRooms.map(r => r.id);
+  const monday = getMondayOfWeek(today);
+  const sunday = shiftDate(monday, 6);
+
+  const [todayCheckins, userActiveDates] = await Promise.all([
+    store.listCheckinsForRoomsDate({
+      roomIds,
+      dateStr: today,
+      currentUserId: user.id,
+    }),
+    store.listUserActiveDatesInRange({
+      userId: user.id,
+      startDate: monday,
+      endDate: sunday,
+    }),
+  ]);
+
+  const membersByRoom = new Map<string, RoomMember[]>();
+  for (const m of allMembers) {
+    const list = membersByRoom.get(m.roomId) ?? [];
+    list.push(m);
+    membersByRoom.set(m.roomId, list);
+  }
+
+  const checkinsByRoom = new Map<string, DailyCheckin[]>();
+  for (const c of todayCheckins) {
+    const list = checkinsByRoom.get(c.roomId) ?? [];
+    list.push(c);
+    checkinsByRoom.set(c.roomId, list);
+  }
+
+  const summaries: RoomSummary[] = await Promise.all(
+    allRooms.map(async room => {
+      const rawMembers = membersByRoom.get(room.id) ?? [];
+      const members = await syncRoomEvictions(store, room.id, rawMembers, today);
+      const checkins = checkinsByRoom.get(room.id) ?? [];
+      const me = members.find(m => m.isCurrentUser);
+      const myCheckin = checkins.find(c => c.userId === user.id);
+
+      const stats = computeCompletionStats(members.length, checkins.length);
+      const streakInfo = computeNextRoomStreak({
+        currentStreak: room.streakDays,
+        lastCompletedDate: room.lastCompletedDate,
+        today,
+        isRoomCompleteToday: stats.isComplete,
+      });
+
+      const checkinByUser = new Map(checkins.map(c => [c.userId, c]));
+      const previewTiles: PreviewTile[] = members.map(m => {
+        const ch = checkinByUser.get(m.userId);
+        if (!ch) return { status: 'empty', imageData: null, nickname: m.nickname };
+        return {
+          status: ch.status,
+          imageData: ch.imageData,
+          nickname: m.nickname,
+        };
+      });
+
+      const restUsed = me
+        ? await store.countRestPassesUsedInRange({
+            roomId: room.id,
+            userId: user.id,
+            startDate: monday,
+            endDate: sunday,
+          })
+        : 0;
+
+      return {
+        id: room.id,
+        title: room.title,
+        tag: room.tag,
+        category: room.category,
+        maxCapacity: room.maxCapacity,
+        memberCount: members.length,
+        streakDays: streakInfo.streakDays,
+        completedCount: stats.completedCount,
+        completionPercent: stats.percent,
+        myStatusToday: myCheckin ? myCheckin.status : 'pending',
+        isJoined: Boolean(me),
+        restPassesLeftThisWeek: Math.max(0, 1 - restUsed),
+        previewTiles,
+      };
+    })
+  );
+
   const myRooms = summaries.filter(s => s.isJoined);
 
   const query = (params?.query || '').trim().toLowerCase();
@@ -346,25 +353,14 @@ export function listRoomsOverview(params?: {
 
   const exploreRooms = sortExploreRooms(openExplore);
 
-  // Build Monday..Sunday week rhythm for user_me
-  const monday = getMondayOfWeek(today);
   const dayLabels = ['월', '화', '수', '목', '금', '토', '일'];
-  const weekRows = db
-    .prepare(
-      `SELECT DISTINCT c.checkin_date
-       FROM daily_checkins c
-       JOIN room_members m ON m.id = c.member_id
-       WHERE m.is_current_user = 1 AND c.checkin_date >= ? AND c.checkin_date <= ?`
-    )
-    .all(monday, shiftDate(monday, 6)) as { checkin_date: string }[];
-  const activeDates = new Set(weekRows.map(r => r.checkin_date));
-
+  const activeDateSet = new Set(userActiveDates);
   const weekRhythm: WeekRhythmDay[] = dayLabels.map((label, idx) => {
     const date = shiftDate(monday, idx);
     return {
       label,
       date,
-      done: activeDates.has(date),
+      done: activeDateSet.has(date),
       isToday: date === today,
     };
   });
@@ -372,11 +368,13 @@ export function listRoomsOverview(params?: {
   return { myRooms, exploreRooms, weekRhythm };
 }
 
-export function createRoom(
+export async function createRoom(
+  user: UserProfile,
   input: { title: string; tag: string; category?: string; maxCapacity: RoomCapacity },
-  today: string = getTodayKst()
-): RoomDetailResponse {
-  const db = getDb(today);
+  today: string = getTodayKst(),
+  storeOverride?: OngiStore
+): Promise<RoomDetailResponse> {
+  const store = resolveStore(storeOverride);
   const title = input.title.trim();
   const tag = normalizeTag(input.tag);
   const category = inferCategory(title, tag, input.category);
@@ -385,382 +383,420 @@ export function createRoom(
 
   const roomId = `room-${crypto.randomUUID().slice(0, 8)}`;
   const memberId = `mem-${crypto.randomUUID().slice(0, 8)}`;
-  const nowIso = new Date().toISOString();
+  const createdAt = new Date().toISOString();
 
-  db.exec('BEGIN');
-  try {
-    db.prepare(
-      `INSERT INTO rooms (id, title, tag, category, max_capacity, streak_days, last_completed_date, created_at)
-       VALUES (?, ?, ?, ?, ?, 0, NULL, ?)`
-    ).run(roomId, title, tag, category, maxCapacity, nowIso);
+  await store.createRoomWithHost({
+    room: {
+      id: roomId,
+      title,
+      tag,
+      category,
+      maxCapacity,
+      streakDays: 0,
+      lastCompletedDate: null,
+      createdAt,
+    },
+    hostMember: {
+      id: memberId,
+      roomId,
+      userId: user.id,
+      nickname: user.nickname,
+      avatarInitial: user.avatarInitial,
+      isHost: true,
+      memberStreakDays: 0,
+      lastActiveDate: today,
+      joinedAt: today,
+    },
+    createdBy: user.id,
+  });
 
-    db.prepare(
-      `INSERT INTO room_members (id, room_id, user_id, nickname, avatar_initial, is_current_user, is_host, member_streak_days, last_active_date, joined_at)
-       VALUES (?, ?, 'user_me', '나', '나', 1, 1, 0, ?, ?)`
-    ).run(memberId, roomId, today, today);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getRoomDetail(roomId, today, today)!;
+  return (await getRoomDetail(user, roomId, today, today, store))!;
 }
 
-export function getRoomDetail(
+export async function getRoomDetail(
+  user: UserProfile,
   roomId: string,
   selectedDate?: string,
-  today: string = getTodayKst()
-): RoomDetailResponse | null {
-  const db = getDb(today);
-  const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId) as
-    | RoomRow
-    | undefined;
-  if (!row) return null;
+  today: string = getTodayKst(),
+  storeOverride?: OngiStore
+): Promise<RoomDetailResponse | null> {
+  const store = resolveStore(storeOverride);
+  const room = await store.getRoomById(roomId);
+  if (!room) return null;
 
-  const members = syncRoomEvictions(db, roomId, today);
+  const rawMembers = await store.listActiveMembers(roomId, user.id);
+  const members = await syncRoomEvictions(store, roomId, rawMembers, today);
   const targetDate = selectedDate || today;
-  const checkins = getCheckinsForRoomDate(db, roomId, targetDate);
 
-  const dateRows = db
-    .prepare(
-      `SELECT DISTINCT checkin_date FROM daily_checkins WHERE room_id = ? ORDER BY checkin_date DESC`
-    )
-    .all(roomId) as { checkin_date: string }[];
-  const dateSet = new Set([today, ...dateRows.map(d => d.checkin_date)]);
-  const availableDates = [...dateSet].sort((a, b) => b.localeCompare(a));
+  const monday = getMondayOfWeek(today);
+  const sunday = shiftDate(monday, 6);
 
-  const completion = computeCompletionStats(members.length, checkins.length);
-  const room = mapRoom(row);
+  const [checkins, dateRows, restUsed, todayCheckins] = await Promise.all([
+    store.listCheckinsForRoomsDate({
+      roomIds: [roomId],
+      dateStr: targetDate,
+      currentUserId: user.id,
+    }),
+    store.listCheckinDatesForRoom(roomId),
+    store.countRestPassesUsedInRange({
+      roomId,
+      userId: user.id,
+      startDate: monday,
+      endDate: sunday,
+    }),
+    targetDate === today
+      ? Promise.resolve(null)
+      : store.listCheckinsForRoomsDate({
+          roomIds: [roomId],
+          dateStr: today,
+          currentUserId: user.id,
+        }),
+  ]);
 
-  // Reflect live streak reset if yesterday was missed before today completes
-  const todayCheckins = targetDate === today ? checkins : getCheckinsForRoomDate(db, roomId, today);
-  const todayComplete = computeCompletionStats(members.length, todayCheckins.length).isComplete;
+  const availableDates = [...new Set([today, ...dateRows])].sort((a, b) =>
+    b.localeCompare(a)
+  );
+
+  const activeUserIds = new Set(members.map(m => m.userId));
+  const formerCheckinsCount =
+    targetDate === today
+      ? 0
+      : checkins.filter(c => !activeUserIds.has(c.userId)).length;
+  const totalSlots = members.length + formerCheckinsCount;
+
+  const completion = computeCompletionStats(totalSlots, checkins.length);
+
+  const effectiveTodayCheckins = todayCheckins ?? checkins;
+  const todayComplete = computeCompletionStats(
+    members.length,
+    effectiveTodayCheckins.filter(c => activeUserIds.has(c.userId)).length
+  ).isComplete;
+
   const effectiveStreak = computeNextRoomStreak({
     currentStreak: room.streakDays,
     lastCompletedDate: room.lastCompletedDate,
     today,
     isRoomCompleteToday: todayComplete,
   });
-  room.streakDays = effectiveStreak.streakDays;
 
-  const me = members.find(m => m.isCurrentUser);
-  const myCheckinOnDate = me ? checkins.find(c => c.memberId === me.id) : undefined;
-  const restUsed = me ? countRestPassesUsedThisWeek(db, roomId, me.id, today) : 0;
+  const roomWithLiveStreak: Room = {
+    ...room,
+    streakDays: effectiveStreak.streakDays,
+  };
+
+  const isJoined = members.some(m => m.isCurrentUser);
+  const myCheckinOnDate = checkins.find(c => c.userId === user.id);
 
   const sameTagInspiration =
-    members.length <= 1 ? getSameTagInspiration(db, room, today) : [];
+    members.length <= 1
+      ? await store.listSameTagSnippets({
+          excludeRoomId: room.id,
+          tag: room.tag,
+          category: room.category,
+          today,
+        })
+      : [];
 
   return {
-    room,
+    room: roomWithLiveStreak,
     members,
     checkins,
     selectedDate: targetDate,
     today,
     availableDates,
-    layoutMode: resolveBoardLayout(members.length),
+    layoutMode: resolveBoardLayout(totalSlots),
     completion,
+    isJoined,
     restPassesLeftThisWeek: Math.max(0, 1 - restUsed),
     myStatusOnSelectedDate: myCheckinOnDate ? myCheckinOnDate.status : 'pending',
     sameTagInspiration,
   };
 }
 
-export function joinRoom(
+export async function joinRoom(
+  user: UserProfile,
   roomId: string,
-  today: string = getTodayKst()
-):
+  today: string = getTodayKst(),
+  storeOverride?: OngiStore
+): Promise<
   | { ok: true; room: RoomDetailResponse }
-  | { ok: false; status: 404 | 409; error: string } {
-  const db = getDb(today);
-  const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId) as
-    | RoomRow
-    | undefined;
-  if (!row) {
+  | { ok: false; status: 404 | 409; error: string }
+> {
+  const store = resolveStore(storeOverride);
+  const room = await store.getRoomById(roomId);
+  if (!room) {
     return { ok: false, status: 404, error: '방을 찾을 수 없어요.' };
   }
 
-  const members = syncRoomEvictions(db, roomId, today);
-  if (members.some(m => m.isCurrentUser)) {
-    return { ok: false, status: 409, error: '이미 참여 중인 방이에요.' };
-  }
-  if (members.length >= row.max_capacity) {
-    return { ok: false, status: 409, error: '방 정원이 모두 찼어요.' };
-  }
+  const rawMembers = await store.listActiveMembers(roomId, user.id);
+  await syncRoomEvictions(store, roomId, rawMembers, today);
 
   const memberId = `mem-${crypto.randomUUID().slice(0, 8)}`;
-  db.prepare(
-    `INSERT INTO room_members (id, room_id, user_id, nickname, avatar_initial, is_current_user, is_host, member_streak_days, last_active_date, joined_at)
-     VALUES (?, ?, 'user_me', '나', '나', 1, 0, 0, ?, ?)`
-  ).run(memberId, roomId, today, today);
+  const joinRes = await store.joinRoomAtomic({
+    roomId,
+    memberId,
+    user,
+    today,
+  });
 
-  return { ok: true, room: getRoomDetail(roomId, today, today)! };
+  if (!joinRes.ok) {
+    return joinRes;
+  }
+
+  const detail = await getRoomDetail(user, roomId, today, today, store);
+  return { ok: true, room: detail! };
 }
 
-function finalizeRoomCompletionAfterCheckin(
-  db: DatabaseSyncType,
-  room: RoomRow,
+async function updateStreaksAfterCheckin(
+  store: OngiStore,
+  room: Room,
   member: RoomMember,
   today: string
-): void {
+): Promise<void> {
   const nextMemberStreak = computeNextMemberStreak({
     currentStreak: member.memberStreakDays,
     lastActiveDate: member.lastActiveDate,
     today,
   });
 
-  db.prepare(
-    `UPDATE room_members SET member_streak_days = ?, last_active_date = ? WHERE id = ?`
-  ).run(nextMemberStreak, today, member.id);
+  const [members, todayCheckins] = await Promise.all([
+    store.listActiveMembers(room.id, member.userId),
+    store.listCheckinsForRoomsDate({
+      roomIds: [room.id],
+      dateStr: today,
+      currentUserId: member.userId,
+    }),
+  ]);
 
-  const members = getRoomMembers(db, room.id);
-  const todayCheckins = getCheckinsForRoomDate(db, room.id, today);
-  const stats = computeCompletionStats(members.length, todayCheckins.length);
+  const activeUserIds = new Set(members.map(m => m.userId));
+  const activeCheckinCount = todayCheckins.filter(c =>
+    activeUserIds.has(c.userId)
+  ).length;
+  const stats = computeCompletionStats(members.length, activeCheckinCount);
+
+  let roomStreakDays = room.streakDays;
+  let lastCompletedDate: string | null = null;
 
   if (stats.isComplete) {
     const nextRoomStreak = computeNextRoomStreak({
-      currentStreak: room.streak_days,
-      lastCompletedDate: room.last_completed_date,
+      currentStreak: room.streakDays,
+      lastCompletedDate: room.lastCompletedDate,
       today,
       isRoomCompleteToday: true,
     });
-    db.prepare(
-      `UPDATE rooms SET streak_days = ?, last_completed_date = ? WHERE id = ?`
-    ).run(nextRoomStreak.streakDays, nextRoomStreak.lastCompletedDate, room.id);
+    roomStreakDays = nextRoomStreak.streakDays;
+    lastCompletedDate = nextRoomStreak.lastCompletedDate;
   }
+
+  await store.applyCheckinStreak({
+    roomId: room.id,
+    memberId: member.id,
+    memberStreakDays: nextMemberStreak,
+    today,
+    roomStreakDays,
+    lastCompletedDate,
+  });
 }
 
-export function submitPhotoCheckin(
+export async function submitPhotoCheckin(
+  user: UserProfile,
   roomId: string,
   input: { imageData: string; note?: string; timestampLabel?: string },
-  today: string = getTodayKst()
-):
+  today: string = getTodayKst(),
+  storeOverride?: OngiStore
+): Promise<
   | { ok: true; checkin: DailyCheckin; room: RoomDetailResponse }
-  | { ok: false; status: 400 | 404 | 409; error: string } {
-  const db = getDb(today);
-  const roomRow = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId) as
-    | RoomRow
-    | undefined;
-  if (!roomRow) {
+  | { ok: false; status: 400 | 404 | 409; error: string }
+> {
+  const store = resolveStore(storeOverride);
+  const room = await store.getRoomById(roomId);
+  if (!room) {
     return { ok: false, status: 404, error: '방을 찾을 수 없어요.' };
   }
 
-  const imageData = (input.imageData || '').trim();
-  if (!imageData) {
-    return { ok: false, status: 400, error: '실시간 촬영 사진이 필요해요.' };
+  const parsedImage = parseCheckinImageData(input.imageData || '');
+  if (!parsedImage) {
+    return {
+      ok: false,
+      status: 400,
+      error: '실시간 촬영된 유효한 이미지(3MB 이하)가 필요해요.',
+    };
   }
 
-  const members = syncRoomEvictions(db, roomId, today);
+  const rawMembers = await store.listActiveMembers(roomId, user.id);
+  const members = await syncRoomEvictions(store, roomId, rawMembers, today);
   const me = members.find(m => m.isCurrentUser);
   if (!me) {
     return { ok: false, status: 400, error: '먼저 방에 참여한 뒤 인증해 주세요.' };
   }
 
-  const existing = db
-    .prepare(
-      `SELECT id FROM daily_checkins WHERE room_id = ? AND member_id = ? AND checkin_date = ?`
-    )
-    .get(roomId, me.id, today) as { id: string } | undefined;
-  if (existing) {
+  const alreadyCheckedIn = await store.hasUserCheckinOnDate({
+    roomId,
+    userId: user.id,
+    dateStr: today,
+  });
+  if (alreadyCheckedIn) {
     return { ok: false, status: 409, error: '오늘은 이미 이 방에 인증을 남겼어요.' };
   }
 
   const checkinId = `chk-${crypto.randomUUID().slice(0, 8)}`;
-  const note = (input.note || '').trim().slice(0, 80) || '오늘도 작은 한 걸음 완료!';
-  const timestampLabel = (input.timestampLabel || '').trim() || formatCurrentTimeLabel();
+  const note =
+    (input.note || '').trim().slice(0, 80) || '오늘도 작은 한 걸음 완료!';
+  const timestampLabel =
+    (input.timestampLabel || '').trim() || formatCurrentTimeLabel();
   const createdAt = new Date().toISOString();
 
-  db.exec('BEGIN');
-  try {
-    db.prepare(
-      `INSERT INTO daily_checkins (id, room_id, member_id, checkin_date, status, image_data, note, timestamp_label, likes_count, liked_by_me, created_at)
-       VALUES (?, ?, ?, ?, 'photo', ?, ?, ?, 0, 0, ?)`
-    ).run(checkinId, roomId, me.id, today, imageData, note, timestampLabel, createdAt);
+  const publicUrl = await store.uploadCheckinImage({
+    userId: user.id,
+    roomId,
+    checkinId,
+    bytes: parsedImage.bytes,
+    contentType: parsedImage.contentType,
+    ext: parsedImage.ext,
+  });
 
-    finalizeRoomCompletionAfterCheckin(db, roomRow, me, today);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+  const insertRes = await store.insertCheckin({
+    id: checkinId,
+    roomId,
+    memberId: me.id,
+    userId: user.id,
+    authorNickname: me.nickname,
+    authorAvatarInitial: me.avatarInitial,
+    checkinDate: today,
+    status: 'photo',
+    imageData: publicUrl,
+    note,
+    timestampLabel,
+    createdAt,
+  });
+
+  if (!insertRes.ok) {
+    return insertRes;
   }
 
-  const roomDetail = getRoomDetail(roomId, today, today)!;
+  await updateStreaksAfterCheckin(store, room, me, today);
+
+  const roomDetail = (await getRoomDetail(user, roomId, today, today, store))!;
   const checkin = roomDetail.checkins.find(c => c.id === checkinId)!;
   return { ok: true, checkin, room: roomDetail };
 }
 
-export function submitRestPass(
+export async function submitRestPass(
+  user: UserProfile,
   roomId: string,
-  today: string = getTodayKst()
-):
+  today: string = getTodayKst(),
+  storeOverride?: OngiStore
+): Promise<
   | { ok: true; checkin: DailyCheckin; room: RoomDetailResponse }
-  | { ok: false; status: 400 | 404 | 409; error: string } {
-  const db = getDb(today);
-  const roomRow = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId) as
-    | RoomRow
-    | undefined;
-  if (!roomRow) {
+  | { ok: false; status: 400 | 404 | 409; error: string }
+> {
+  const store = resolveStore(storeOverride);
+  const room = await store.getRoomById(roomId);
+  if (!room) {
     return { ok: false, status: 404, error: '방을 찾을 수 없어요.' };
   }
 
-  const members = syncRoomEvictions(db, roomId, today);
+  const rawMembers = await store.listActiveMembers(roomId, user.id);
+  const members = await syncRoomEvictions(store, roomId, rawMembers, today);
   const me = members.find(m => m.isCurrentUser);
   if (!me) {
-    return { ok: false, status: 400, error: '먼저 방에 참여한 뒤 휴식권을 사용해 주세요.' };
+    return {
+      ok: false,
+      status: 400,
+      error: '먼저 방에 참여한 뒤 휴식권을 사용해 주세요.',
+    };
   }
 
-  const existingToday = db
-    .prepare(
-      `SELECT id FROM daily_checkins WHERE room_id = ? AND member_id = ? AND checkin_date = ?`
-    )
-    .get(roomId, me.id, today) as { id: string } | undefined;
-  if (existingToday) {
+  const alreadyCheckedIn = await store.hasUserCheckinOnDate({
+    roomId,
+    userId: user.id,
+    dateStr: today,
+  });
+  if (alreadyCheckedIn) {
     return { ok: false, status: 409, error: '오늘은 이미 이 방에 기록을 남겼어요.' };
   }
 
-  const restUsed = countRestPassesUsedThisWeek(db, roomId, me.id, today);
+  const monday = getMondayOfWeek(today);
+  const sunday = shiftDate(monday, 6);
+  const restUsed = await store.countRestPassesUsedInRange({
+    roomId,
+    userId: user.id,
+    startDate: monday,
+    endDate: sunday,
+  });
   if (restUsed >= 1) {
-    return { ok: false, status: 400, error: '이번 주 휴식권(주 1회)을 이미 모두 사용했어요.' };
+    return {
+      ok: false,
+      status: 400,
+      error: '이번 주 휴식권(주 1회)을 이미 모두 사용했어요.',
+    };
   }
 
   const checkinId = `chk-${crypto.randomUUID().slice(0, 8)}`;
   const timestampLabel = formatCurrentTimeLabel();
   const createdAt = new Date().toISOString();
 
-  db.exec('BEGIN');
-  try {
-    db.prepare(
-      `INSERT INTO daily_checkins (id, room_id, member_id, checkin_date, status, image_data, note, timestamp_label, likes_count, liked_by_me, created_at)
-       VALUES (?, ?, ?, ?, 'rest', NULL, '오늘은 잠시 쉬어가도 괜찮아요', ?, 0, 0, ?)`
-    ).run(checkinId, roomId, me.id, today, timestampLabel, createdAt);
+  const insertRes = await store.insertCheckin({
+    id: checkinId,
+    roomId,
+    memberId: me.id,
+    userId: user.id,
+    authorNickname: me.nickname,
+    authorAvatarInitial: me.avatarInitial,
+    checkinDate: today,
+    status: 'rest',
+    imageData: null,
+    note: '오늘은 잠시 쉬어가도 괜찮아요',
+    timestampLabel,
+    createdAt,
+  });
 
-    finalizeRoomCompletionAfterCheckin(db, roomRow, me, today);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+  if (!insertRes.ok) {
+    return insertRes;
   }
 
-  const roomDetail = getRoomDetail(roomId, today, today)!;
+  await updateStreaksAfterCheckin(store, room, me, today);
+
+  const roomDetail = (await getRoomDetail(user, roomId, today, today, store))!;
   const checkin = roomDetail.checkins.find(c => c.id === checkinId)!;
   return { ok: true, checkin, room: roomDetail };
 }
 
-export function toggleCheckinLike(
-  checkinId: string
-): { ok: true; checkin: DailyCheckin } | { ok: false; status: 404; error: string } {
-  const db = getDb();
-  const existing = db
-    .prepare(
-      `SELECT c.*, m.nickname AS member_nickname, m.avatar_initial AS member_avatar_initial, m.is_current_user
-       FROM daily_checkins c
-       JOIN room_members m ON m.id = c.member_id
-       WHERE c.id = ?`
-    )
-    .get(checkinId) as CheckinRow | undefined;
-
-  if (!existing) {
-    return { ok: false, status: 404, error: '인증 기록을 찾을 수 없어요.' };
-  }
-
-  const nextLiked = existing.liked_by_me === 1 ? 0 : 1;
-  const nextCount = Math.max(0, existing.likes_count + (nextLiked === 1 ? 1 : -1));
-
-  db.prepare(
-    `UPDATE daily_checkins SET liked_by_me = ?, likes_count = ? WHERE id = ?`
-  ).run(nextLiked, nextCount, checkinId);
-
-  const updated = db
-    .prepare(
-      `SELECT c.*, m.nickname AS member_nickname, m.avatar_initial AS member_avatar_initial, m.is_current_user
-       FROM daily_checkins c
-       JOIN room_members m ON m.id = c.member_id
-       WHERE c.id = ?`
-    )
-    .get(checkinId) as unknown as CheckinRow;
-
-  return { ok: true, checkin: mapCheckin(updated) };
+export async function toggleCheckinLike(
+  user: UserProfile,
+  checkinId: string,
+  storeOverride?: OngiStore
+): Promise<
+  { ok: true; checkin: DailyCheckin } | { ok: false; status: 404; error: string }
+> {
+  const store = resolveStore(storeOverride);
+  return store.toggleLike({ checkinId, userId: user.id });
 }
 
-export function getAlbumEntries(params?: {
-  month?: string;
-  roomId?: string;
-  today?: string;
-}): AlbumResponse {
+export async function getAlbumEntries(
+  user: UserProfile,
+  params?: { month?: string; roomId?: string; today?: string },
+  storeOverride?: OngiStore
+): Promise<AlbumResponse> {
+  const store = resolveStore(storeOverride);
   const today = params?.today || getTodayKst();
-  const db = getDb(today);
   const month = params?.month || today.slice(0, 7);
-  const roomIdFilter = params?.roomId?.trim() || '';
+  const roomId = params?.roomId?.trim() || undefined;
 
-  const monthRows = db
-    .prepare(
-      `SELECT DISTINCT substr(c.checkin_date, 1, 7) AS m
-       FROM daily_checkins c
-       JOIN room_members rm ON rm.id = c.member_id
-       WHERE rm.is_current_user = 1
-       ORDER BY m DESC`
-    )
-    .all() as { m: string }[];
-  const availableMonths = [...new Set([today.slice(0, 7), ...monthRows.map(r => r.m)])].sort(
-    (a, b) => b.localeCompare(a)
-  );
+  const data = await store.listUserAlbumData({
+    userId: user.id,
+    month,
+    roomId,
+  });
 
-  const roomRows = db
-    .prepare(
-      `SELECT r.id, r.title, r.tag
-       FROM rooms r
-       JOIN room_members rm ON rm.room_id = r.id
-       WHERE rm.is_current_user = 1
-       ORDER BY r.created_at DESC`
-    )
-    .all() as { id: string; title: string; tag: string }[];
-
-  const rows = db
-    .prepare(
-      `SELECT c.id, c.room_id, r.title AS room_title, r.tag, c.checkin_date, c.status,
-              c.image_data, c.note, c.timestamp_label, c.likes_count
-       FROM daily_checkins c
-       JOIN room_members rm ON rm.id = c.member_id
-       JOIN rooms r ON r.id = c.room_id
-       WHERE rm.is_current_user = 1
-         AND substr(c.checkin_date, 1, 7) = ?
-         ${roomIdFilter ? 'AND c.room_id = ?' : ''}
-       ORDER BY c.checkin_date DESC, c.created_at DESC`
-    )
-    .all(...(roomIdFilter ? [month, roomIdFilter] : [month])) as {
-    id: string;
-    room_id: string;
-    room_title: string;
-    tag: string;
-    checkin_date: string;
-    status: 'photo' | 'rest';
-    image_data: string | null;
-    note: string;
-    timestamp_label: string;
-    likes_count: number;
-  }[];
-
-  const entries: AlbumEntry[] = rows.map(r => ({
-    id: r.id,
-    roomId: r.room_id,
-    roomTitle: r.room_title,
-    tag: r.tag,
-    checkinDate: r.checkin_date,
-    status: r.status,
-    imageData: r.image_data,
-    note: r.note,
-    timestampLabel: r.timestamp_label,
-    likesCount: r.likes_count,
-  }));
+  const availableMonths = [
+    ...new Set([today.slice(0, 7), ...data.availableMonths]),
+  ].sort((a, b) => b.localeCompare(a));
 
   return {
     month,
     availableMonths,
-    rooms: roomRows.map(r => ({
-      id: r.id,
-      title: r.title,
-      tag: r.tag,
-    })),
-    entries,
+    rooms: data.rooms,
+    entries: data.entries,
   };
 }

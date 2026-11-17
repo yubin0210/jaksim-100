@@ -1,8 +1,5 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { closeAndResetDbCache } from '@/lib/db';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { createInMemoryOngiStore } from '@/lib/store-memory';
 import {
   createRoom,
   getAlbumEntries,
@@ -12,172 +9,284 @@ import {
   submitPhotoCheckin,
   submitRestPass,
   toggleCheckinLike,
+  type OngiStore,
 } from '@/lib/repository';
+import type { UserProfile } from '@/types/ongi';
 
 const TODAY = '2026-11-16'; // Monday
-let tmpDir: string;
+const VALID_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAA==';
+
+const userA: UserProfile = {
+  id: '11111111-1111-4111-8111-111111111111',
+  email: 'minji@ongi.app',
+  nickname: '민지',
+  avatarInitial: '민',
+};
+
+const userB: UserProfile = {
+  id: '22222222-2222-4222-8222-222222222222',
+  email: 'jihoon@ongi.app',
+  nickname: '지훈',
+  avatarInitial: '지',
+};
+
+const userC: UserProfile = {
+  id: '33333333-3333-4333-8333-333333333333',
+  email: 'seoyeon@ongi.app',
+  nickname: '서연',
+  avatarInitial: '서',
+};
+
+let store: OngiStore;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ongi-repo-test-'));
-  process.env.ONGI_DB_PATH = path.join(tmpDir, 'test.db');
-  closeAndResetDbCache();
+  store = createInMemoryOngiStore();
 });
 
-afterEach(() => {
-  closeAndResetDbCache();
-  delete process.env.ONGI_DB_PATH;
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+describe('Clean empty start & multi-user room lifecycle', () => {
+  it('starts completely empty with zero fake seed data', async () => {
+    const overview = await listRoomsOverview(userA, { today: TODAY }, store);
 
-describe('SQLite seeding and room overview', () => {
-  it('auto-seeds 3 joined rooms, 4 explore rooms, and 7-day week rhythm', () => {
-    const overview = listRoomsOverview({ today: TODAY });
-
-    expect(overview.myRooms).toHaveLength(3);
-    const workout = overview.myRooms.find(r => r.title === '저녁 운동 메이트');
-    const reading = overview.myRooms.find(r => r.title === '밤 10시 차분한 독서방');
-    const coding = overview.myRooms.find(r => r.title === '퇴근 후 사이드 작업실');
-
-    expect(workout?.completionPercent).toBe(75);
-    expect(workout?.streakDays).toBe(12);
-    expect(workout?.myStatusToday).toBe('pending');
-
-    expect(reading?.completionPercent).toBe(100);
-    expect(reading?.myStatusToday).toBe('photo');
-
-    expect(coding?.completionPercent).toBe(33);
-    expect(coding?.myStatusToday).toBe('pending');
-
-    expect(overview.exploreRooms.length).toBe(4);
-    expect(overview.exploreRooms[0].maxCapacity - overview.exploreRooms[0].memberCount).toBe(1);
+    expect(overview.myRooms).toEqual([]);
+    expect(overview.exploreRooms).toEqual([]);
     expect(overview.weekRhythm).toHaveLength(7);
+    expect(overview.weekRhythm.every(d => d.done === false)).toBe(true);
   });
 
-  it('creates a new custom room with normalized tag and single layout', () => {
-    const detail = createRoom(
-      {
-        title: '매일 저녁 영어 원서 3쪽',
-        tag: '영어원서',
-        category: 'reading',
-        maxCapacity: 4,
-      },
-      TODAY
+  it('creates rooms, exposes open rooms to other users, and enforces capacity/duplicate 409 guards', async () => {
+    const created = await createRoom(
+      userA,
+      { title: '저녁 운동 메이트', tag: '오운완', maxCapacity: 2 },
+      TODAY,
+      store
     );
 
-    expect(detail.room.tag).toBe('#영어원서');
-    expect(detail.layoutMode).toBe('single');
-    expect(detail.members).toHaveLength(1);
-    expect(detail.members[0].isHost).toBe(true);
-    expect(detail.members[0].isCurrentUser).toBe(true);
-    expect(detail.sameTagInspiration.length).toBeGreaterThan(0);
-  });
-});
+    expect(created.room.tag).toBe('#오운완');
+    expect(created.isJoined).toBe(true);
+    expect(created.members).toHaveLength(1);
+    expect(created.members[0].isHost).toBe(true);
+    expect(created.members[0].isCurrentUser).toBe(true);
 
-describe('joinRoom (Review Focus #2)', () => {
-  it('joins an open explore room and rejects full or already-joined rooms with 409', () => {
-    const overview = listRoomsOverview({ today: TODAY });
-    const fullRoom = overview.myRooms.find(r => r.title === '밤 10시 차분한 독서방')!;
-    const alreadyJoined = overview.myRooms.find(r => r.title === '저녁 운동 메이트')!;
-    const openRoom = overview.exploreRooms[0];
+    // User B sees User A's room in exploreRooms and can preview it with isJoined: false
+    const overviewB = await listRoomsOverview(userB, { today: TODAY }, store);
+    expect(overviewB.myRooms).toEqual([]);
+    expect(overviewB.exploreRooms).toHaveLength(1);
 
-    expect(joinRoom(fullRoom.id, TODAY)).toMatchObject({ ok: false, status: 409 });
-    expect(joinRoom(alreadyJoined.id, TODAY)).toMatchObject({ ok: false, status: 409 });
-    expect(joinRoom('non-existent', TODAY)).toMatchObject({ ok: false, status: 404 });
+    const previewB = await getRoomDetail(userB, created.room.id, TODAY, TODAY, store);
+    expect(previewB?.isJoined).toBe(false);
+    expect(previewB?.members.every(m => !m.isCurrentUser)).toBe(true);
 
-    const joined = joinRoom(openRoom.id, TODAY);
-    expect(joined.ok).toBe(true);
-    if (joined.ok) {
-      expect(joined.room.members.some(m => m.isCurrentUser)).toBe(true);
+    // Duplicate join by User A -> 409
+    await expect(joinRoom(userA, created.room.id, TODAY, store)).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+    });
+
+    // User B joins -> 200
+    const joinedB = await joinRoom(userB, created.room.id, TODAY, store);
+    expect(joinedB.ok).toBe(true);
+    if (joinedB.ok) {
+      expect(joinedB.room.isJoined).toBe(true);
+      expect(joinedB.room.members).toHaveLength(2);
     }
+
+    // User C attempts to join full 2/2 room -> 409
+    await expect(joinRoom(userC, created.room.id, TODAY, store)).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+    });
   });
 });
 
-describe('submitPhotoCheckin & streak guard (Review Focus #1 & #4)', () => {
-  it('completes 4-member room to 100%, increments streak 12->13 once, and rejects same-day duplicates', () => {
-    const overview = listRoomsOverview({ today: TODAY });
-    const workout = overview.myRooms.find(r => r.title === '저녁 운동 메이트')!;
-
-    expect(
-      submitPhotoCheckin(workout.id, { imageData: '', note: 'empty' }, TODAY)
-    ).toMatchObject({ ok: false, status: 400 });
-
-    const res = submitPhotoCheckin(
-      workout.id,
-      { imageData: 'data:image/jpeg;base64,abc123', note: '스쿼트 완료!', timestampLabel: '09:45 PM' },
-      TODAY
+describe('Photo check-in storage upload, streak guard & multi-user likes', () => {
+  it('validates image format, uploads JPEG to storage URL, increments streak once on 100%, and tracks per-user likes', async () => {
+    const created = await createRoom(
+      userA,
+      { title: '밤 10시 독서방', tag: '#독서', maxCapacity: 2 },
+      TODAY,
+      store
     );
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.room.completion.percent).toBe(100);
-      expect(res.room.room.streakDays).toBe(13);
-      expect(res.room.myStatusOnSelectedDate).toBe('photo');
+    await joinRoom(userB, created.room.id, TODAY, store);
+
+    // Reject empty or non-image data URL
+    await expect(
+      submitPhotoCheckin(userA, created.room.id, { imageData: '', note: '빈 사진' }, TODAY, store)
+    ).resolves.toMatchObject({ ok: false, status: 400 });
+    await expect(
+      submitPhotoCheckin(
+        userA,
+        created.room.id,
+        { imageData: 'https://evil.example.com/fake.jpg', note: 'URL 직접 입력' },
+        TODAY,
+        store
+      )
+    ).resolves.toMatchObject({ ok: false, status: 400 });
+
+    // User A submits JPEG -> 50%, streak still 0
+    const chkA = await submitPhotoCheckin(
+      userA,
+      created.room.id,
+      { imageData: VALID_JPEG, note: '15쪽 완독', timestampLabel: '09:30 PM' },
+      TODAY,
+      store
+    );
+    expect(chkA.ok).toBe(true);
+    if (chkA.ok) {
+      expect(chkA.checkin.imageData).toMatch(/^https?:\/\/|^\/mock-storage\//);
+      expect(chkA.room.completion.percent).toBe(50);
+      expect(chkA.room.room.streakDays).toBe(0);
     }
 
-    // Same-day duplicate photo or rest must be rejected with 409 and preserve streak 13
-    expect(
+    // Same-day duplicate check-in by User A -> 409
+    await expect(
       submitPhotoCheckin(
-        workout.id,
-        { imageData: 'data:image/jpeg;base64,xyz', note: '또 올림' },
-        TODAY
+        userA,
+        created.room.id,
+        { imageData: VALID_JPEG, note: '재업로드' },
+        TODAY,
+        store
       )
-    ).toMatchObject({ ok: false, status: 409 });
-    expect(submitRestPass(workout.id, TODAY)).toMatchObject({ ok: false, status: 409 });
-    expect(getRoomDetail(workout.id, TODAY, TODAY)?.room.streakDays).toBe(13);
+    ).resolves.toMatchObject({ ok: false, status: 409 });
+
+    // User B submits JPEG -> 100%, streak increments 0 -> 1
+    const chkB = await submitPhotoCheckin(
+      userB,
+      created.room.id,
+      { imageData: VALID_JPEG, note: '필사 10분', timestampLabel: '10:05 PM' },
+      TODAY,
+      store
+    );
+    expect(chkB.ok).toBe(true);
+    if (chkB.ok) {
+      expect(chkB.room.completion.percent).toBe(100);
+      expect(chkB.room.room.streakDays).toBe(1);
+    }
+
+    // Multi-user independent likes on User A's checkin
+    if (chkA.ok) {
+      const likeByB = await toggleCheckinLike(userB, chkA.checkin.id, store);
+      expect(likeByB).toMatchObject({
+        ok: true,
+        checkin: { likesCount: 1, likedByMe: true },
+      });
+
+      // User A still sees likedByMe: false while likesCount: 1
+      const detailForA = await getRoomDetail(userA, created.room.id, TODAY, TODAY, store);
+      const tileForA = detailForA?.checkins.find(c => c.id === chkA.checkin.id);
+      expect(tileForA?.likesCount).toBe(1);
+      expect(tileForA?.likedByMe).toBe(false);
+
+      const likeByA = await toggleCheckinLike(userA, chkA.checkin.id, store);
+      expect(likeByA).toMatchObject({
+        ok: true,
+        checkin: { likesCount: 2, likedByMe: true },
+      });
+    }
   });
 });
 
-describe('submitRestPass weekly limit (Review Focus #3 & #4)', () => {
-  it('allows one rest pass per Monday-Sunday week per room and rejects second rest pass in same week', () => {
-    const overview = listRoomsOverview({ today: TODAY });
-    const coding = overview.myRooms.find(r => r.title === '퇴근 후 사이드 작업실')!;
+describe('Post-eviction preservation & same-week constraints (Review Focus #2 & #3)', () => {
+  it('evicts inactive member with protectCurrentUser: false, transfers host, and preserves /album, weekRhythm, and past board tiles', async () => {
+    const day0 = '2026-11-16'; // Monday
+    const day1 = '2026-11-17'; // Tuesday
+    const day5 = '2026-11-21'; // Saturday (day0 <= day5-3='2026-11-18' and lastActive < '2026-11-18')
 
-    const monRest = submitRestPass(coding.id, TODAY); // 2026-11-16 (Monday)
-    expect(monRest.ok).toBe(true);
-    if (monRest.ok) {
-      expect(monRest.checkin.status).toBe('rest');
-      expect(monRest.room.restPassesLeftThisWeek).toBe(0);
-    }
+    const created = await createRoom(
+      userA,
+      { title: '새벽 기상', tag: '#미라클모닝', maxCapacity: 4 },
+      day0,
+      store
+    );
+    await joinRoom(userB, created.room.id, day0, store);
 
-    // Same day photo check-in is blocked (409)
-    expect(
-      submitPhotoCheckin(
-        coding.id,
-        { imageData: 'data:image/jpeg;base64,abc', note: 'same day' },
-        TODAY
-      )
-    ).toMatchObject({ ok: false, status: 409 });
+    // User A (host) checks in on day0, then goes inactive through day5
+    await submitPhotoCheckin(
+      userA,
+      created.room.id,
+      { imageData: VALID_JPEG, note: '첫날 기상 성공' },
+      day0,
+      store
+    );
 
-    // Next day in same week (Tuesday 2026-11-17) second rest pass is blocked (400)
-    expect(submitRestPass(coding.id, '2026-11-17')).toMatchObject({ ok: false, status: 400 });
+    // Keep User B active on day3 ('2026-11-19') so only User A is evicted on day5
+    await submitPhotoCheckin(
+      userB,
+      created.room.id,
+      { imageData: VALID_JPEG, note: '계속 출석 중' },
+      '2026-11-19',
+      store
+    );
 
-    // Next Monday (2026-11-23) allows a fresh weekly rest pass
-    const nextWeekDetail = getRoomDetail(coding.id, '2026-11-23', '2026-11-23');
-    expect(nextWeekDetail?.restPassesLeftThisWeek).toBe(1);
+    // User A opens room/overview on day5 -> protectCurrentUser is false, so User A is evicted and User B becomes host
+    const detailDay5 = await getRoomDetail(userA, created.room.id, day5, day5, store);
+    expect(detailDay5?.members).toHaveLength(1);
+    expect(detailDay5?.members[0].userId).toBe(userB.id);
+    expect(detailDay5?.members[0].isHost).toBe(true);
+    expect(detailDay5?.isJoined).toBe(false);
+
+    // User A's past check-in on day0 is preserved in past-date board view
+    const pastBoard = await getRoomDetail(userB, created.room.id, day0, day5, store);
+    expect(pastBoard?.checkins).toHaveLength(1);
+    expect(pastBoard?.checkins[0].memberId).toBeNull();
+    expect(pastBoard?.checkins[0].memberNickname).toBe('민지');
+
+    // User A's personal /album and weekRhythm still contain day0 check-in
+    const albumA = await getAlbumEntries(userA, { month: '2026-11', today: day5 }, store);
+    expect(albumA.entries).toHaveLength(1);
+    expect(albumA.entries[0].note).toBe('첫날 기상 성공');
+
+    const overviewA = await listRoomsOverview(userA, { today: day5 }, store);
+    const mon = overviewA.weekRhythm.find(d => d.date === day0);
+    expect(mon?.done).toBe(true);
+    expect(day1).toBe('2026-11-17');
   });
-});
 
-describe('likes, history, and album', () => {
-  it('toggles checkin likes and filters user album entries by month and room', () => {
-    const overview = listRoomsOverview({ today: TODAY });
-    const workout = overview.myRooms.find(r => r.title === '저녁 운동 메이트')!;
-    const detail = getRoomDetail(workout.id, TODAY, TODAY)!;
+  it('enforces once-per-week rest pass and same-day check-in uniqueness across eviction and re-join', async () => {
+    const day0 = '2026-11-16'; // Monday
+    const day4 = '2026-11-20'; // Friday (same Mon-Sun week)
 
-    expect(detail.availableDates.length).toBeGreaterThanOrEqual(3);
-    const firstTile = detail.checkins[0];
-    const toggled = toggleCheckinLike(firstTile.id);
-    expect(toggled.ok).toBe(true);
-    if (toggled.ok) {
-      expect(toggled.checkin.likedByMe).toBe(!firstTile.likedByMe);
-      expect(toggled.checkin.likesCount).toBe(
-        firstTile.likedByMe ? firstTile.likesCount - 1 : firstTile.likesCount + 1
-      );
+    const created = await createRoom(
+      userA,
+      { title: '주간 러닝방', tag: '#러닝', maxCapacity: 4 },
+      day0,
+      store
+    );
+    await joinRoom(userB, created.room.id, day0, store);
+
+    // User A uses weekly rest pass on Monday
+    const restRes = await submitRestPass(userA, created.room.id, day0, store);
+    expect(restRes.ok).toBe(true);
+
+    // Same-day photo attempt -> 409
+    await expect(
+      submitPhotoCheckin(
+        userA,
+        created.room.id,
+        { imageData: VALID_JPEG, note: '같은 날 재시도' },
+        day0,
+        store
+      )
+    ).resolves.toMatchObject({ ok: false, status: 409 });
+
+    // User B stays active on Wednesday so User A gets evicted on Friday (day0 < 2026-11-17)
+    await submitPhotoCheckin(
+      userB,
+      created.room.id,
+      { imageData: VALID_JPEG, note: '수요일 러닝' },
+      '2026-11-18',
+      store
+    );
+
+    // Trigger eviction on Friday and let User A re-join the same room in the same week
+    const rejoin = await joinRoom(userA, created.room.id, day4, store);
+    expect(rejoin.ok).toBe(true);
+    if (rejoin.ok) {
+      expect(rejoin.room.restPassesLeftThisWeek).toBe(0);
     }
 
-    const albumAll = getAlbumEntries({ month: '2026-11', today: TODAY });
-    expect(albumAll.entries.length).toBeGreaterThanOrEqual(3);
-
-    const reading = overview.myRooms.find(r => r.title === '밤 10시 차분한 독서방')!;
-    const albumFiltered = getAlbumEntries({ month: '2026-11', roomId: reading.id, today: TODAY });
-    expect(albumFiltered.entries.every(e => e.roomId === reading.id)).toBe(true);
+    // Second rest pass in same Mon-Sun week after re-joining -> 400
+    await expect(
+      submitRestPass(userA, created.room.id, day4, store)
+    ).resolves.toMatchObject({ ok: false, status: 400 });
   });
 });

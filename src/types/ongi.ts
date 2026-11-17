@@ -2,6 +2,13 @@ export type RoomCapacity = 2 | 4 | 6;
 export type CheckinStatus = 'photo' | 'rest';
 export type LayoutMode = 'single' | 'split-2' | 'split-3' | 'grid-2x2' | 'grid-2x3';
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  nickname: string;
+  avatarInitial: string;
+}
+
 export interface Room {
   id: string;
   title: string;
@@ -29,7 +36,8 @@ export interface RoomMember {
 export interface DailyCheckin {
   id: string;
   roomId: string;
-  memberId: string;
+  memberId: string | null;
+  userId: string;
   memberNickname: string;
   memberAvatarInitial: string;
   isCurrentUser: boolean;
@@ -98,6 +106,7 @@ export interface RoomDetailResponse {
   availableDates: string[];
   layoutMode: LayoutMode;
   completion: CompletionStats;
+  isJoined: boolean;
   restPassesLeftThisWeek: number;
   myStatusOnSelectedDate: 'pending' | 'photo' | 'rest';
   sameTagInspiration: InspirationSnippet[];
