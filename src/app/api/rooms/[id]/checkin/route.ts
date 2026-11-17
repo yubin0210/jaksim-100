@@ -1,9 +1,13 @@
+import { requireAuthenticatedUser } from '@/lib/auth';
 import { submitPhotoCheckin } from '@/lib/repository';
 
 export async function POST(
   req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuthenticatedUser();
+  if (!auth.ok) return auth.response;
+
   const { id } = await context.params;
   let body: { imageData?: unknown; note?: unknown; timestampLabel?: unknown };
   try {
@@ -17,7 +21,11 @@ export async function POST(
   const timestampLabel =
     typeof body.timestampLabel === 'string' ? body.timestampLabel : undefined;
 
-  const result = submitPhotoCheckin(id, { imageData, note, timestampLabel });
+  const result = await submitPhotoCheckin(auth.user, id, {
+    imageData,
+    note,
+    timestampLabel,
+  });
   if (!result.ok) {
     return Response.json({ error: result.error }, { status: result.status });
   }
