@@ -6,18 +6,19 @@
 
 ## 주요 기능
 
+- **이메일 회원가입/로그인 & `HttpOnly` 세션 보안 (`/auth`)**: Supabase Auth(`@supabase/ssr`)와 Next.js 미들웨어를 통해 사용자별 계정·방 참여·개인 앨범을 안전하게 분리합니다.
 - **가변형 1~6인 분할 폴라로이드 보드**: 방 정원(2/4/6명)이 차기 전에도 현재 인원수(`1칸` / `상하 2분할` / `3분할` / `2×2` / `2×3`)에 맞춰 빈칸 없이 보드가 구성됩니다. 1인 방일 때는 같은 `#태그` 메이트들의 최근 인증 스냅샷 스트립을 함께 보여줍니다.
-- **인앱 실시간 카메라 & 스탬프 워터마크**: 갤러리 파일 업로드(`<input type="file">`)를 배제하고, `getUserMedia` 실시간 카메라 스트림 + `<canvas>` 타임스탬프 합성을 통해 인증합니다. 카메라가 없거나 권한이 차단된 데스크톱 환경에서는 프리뷰 캔버스 스냅샷 폴백 모드를 제공합니다.
+- **인앱 실시간 카메라 & 클라우드 스토리지 업로드**: 갤러리 파일 업로드(`<input type="file">`)를 배제하고, `getUserMedia` 실시간 카메라 스트림 + `<canvas>` 타임스탬프 합성을 통해 촬영한 JPEG 이미지를 서버에서 검증한 뒤 Supabase Storage(`checkins` 버킷)에 저장합니다. (웹캠이 없는 로컬 테스트 시에만 `NEXT_PUBLIC_ALLOW_CAMERA_FALLBACK=true` 설정 가능)
 - **주 1회 휴식권 스티커 (`오늘은 쉬어가기`)**: 방별로 월~일 기준 주 1회 휴식 스티커를 사용해 방과 개인의 연속 일수(`Day N`)를 끊기지 않게 보호합니다.
-- **3일 연속 미활동 멤버 자동 정리 & 방장 승계**: 직전 과거 3일(`D-3 ~ D-1`) 연속 미활동 멤버를 자동 정리하고, 방장이 떠날 경우 가장 먼저 참여한 멤버에게 `is_host`를 자동 승계합니다(마지막 1인은 보호).
-- **미달 방 우선 탐색 & 자유 태그 방 개설 (`/explore`)**: 빈자리가 1칸 남은 방과 진행 중인 미달 방을 우선 추천하고, 자유 `#태그`와 정원(2/4/6명)으로 새 방을 만들 수 있습니다.
+- **3일 연속 미활동 멤버 자동 정리 & 기록 보존**: 직전 과거 3일(`D-3 ~ D-1`) 연속 미활동 멤버를 자동 정리하고 방장 승계를 처리하며, 퇴장 후에도 기존 인증 사진과 내 앨범(`/album`) 기록은 보존됩니다.
+- **미달 방 우선 탐색 & 자유 태그 방 개설 (`/explore`)**: 빈자리가 1칸 남은 방과 진행 중인 미달 방을 우선 추천하고, 미참여 방 미리보기 및 `함께하기` 즉시 합류를 지원합니다.
 - **개인 월간 앨범 (`/album`)**: 내가 남긴 모든 인증 사진과 휴식 스티커를 월간 캘린더와 방별 필터로 모아보고 라이트박스로 크게 확인할 수 있습니다.
 
 ## 기술 스택 및 아키텍처
 
 - **Framework**: Next.js 16 (App Router, React 19, TypeScript)
-- **Database**: Node.js 내장 `node:sqlite` (`DatabaseSync`, 네이티브 C++ 컴파일 불필요, `data/ongi.db`)
-- **Testing**: Vitest (`tests/domain.test.ts`, `tests/repository.test.ts`, `tests/api.test.ts`)
+- **Backend & Auth**: Supabase (`Auth`, `PostgreSQL` + RLS + Atomic RPCs, `Storage`)
+- **Testing**: Vitest (`tests/domain.test.ts`, `tests/repository.test.ts`, `tests/api.test.ts`, `tests/ui-guards.test.ts`)
 - **Design System**: Cozy Daylight (`#F4EDE2` Warm Oat, `#FAF6F0` Warm Milk, `#FFFDF9` Cream Ivory, `#EE6348` Persimmon Coral, `#F2A93B` Marigold Honey, `#4F9866` Clover Sage, `Pretendard Variable` × `Fraunces`, 2px 둥근 선형 SVG 아이콘)
 - **Mobile Packaging Ready**: `capacitor.config.ts` 및 분리된 카메라 어댑터(`src/lib/camera-adapter.ts`)
 
@@ -26,20 +27,38 @@
 ```text
 src/
 ├── app/
-│   ├── api/                # REST API 핸들러 (/api/rooms, checkin, rest, like, album)
-│   ├── explore/page.tsx    # 화면 3: 방 탐색 및 새 방 만들기
-│   ├── album/page.tsx      # 화면 4: 내 월간 인증 앨범
-│   ├── rooms/[id]/page.tsx # 화면 2: 단일 방 몰입 풀스크린 폴라로이드 보드
-│   └── page.tsx            # 화면 1: 내 참여 방 목록 및 주간 흐름
-├── components/             # UI 컴포넌트 및 LiveCameraModal
+│   ├── api/auth/           # 회원가입, 로그인, 로그아웃 API
+│   ├── api/                # 인증 보호 REST API (/api/rooms, checkin, rest, like, album)
+│   ├── auth/page.tsx       # 로그인 / 회원가입 화면
+│   ├── explore/page.tsx    # 방 탐색 및 새 방 만들기
+│   ├── album/page.tsx      # 내 월간 인증 앨범
+│   ├── rooms/[id]/page.tsx # 단일 방 몰입 풀스크린 폴라로이드 보드
+│   └── page.tsx            # 내 참여 방 목록 및 주간 흐름
+├── components/             # UI 컴포넌트, AuthClient 및 LiveCameraModal
 ├── lib/
+│   ├── supabase/           # @supabase/ssr 브라우저·서버·미들웨어 클라이언트
+│   ├── auth.ts             # 서버 세션 사용자 조회 및 401 가드
 │   ├── camera-adapter.ts   # 웹캠/캔버스 캡처 어댑터 (Capacitor Camera 교체 지점)
-│   ├── db.ts               # node:sqlite 스키마 및 자동 시딩
 │   ├── domain.ts           # 순수 도메인 규칙 (레이아웃, 달성률, 연속일수, 잠수 정리)
-│   ├── repository.ts       # SQLite 트랜잭션 및 방/체크인/앨범 로직
-│   └── seed-data.ts        # 오프라인 안전 시드 데이터 및 포스터 아트
-└── types/ongi.ts           # 공용 도메인/API 타입 정의
+│   ├── repository.ts       # 멀티유저 비즈니스 계층 및 OngiStore 어댑터
+│   ├── store-supabase.ts   # Supabase PostgreSQL + Storage + RPC 구현체
+│   ├── store-memory.ts     # 오프라인 Vitest 검증용 인메모리 스토어
+│   └── ui-guards.ts        # 보드 푸터 상태·카메라 셔터 가드 헬퍼
+└── middleware.ts           # SSR 쿠키 세션 갱신 및 미로그인 리다이렉트/401 차단
 ```
+
+## 환경변수 및 Supabase 설정
+
+`.env.example`을 참고해 `.env.local`(또는 배포 플랫폼 환경변수)을 설정합니다.
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-publishable-or-anon-key
+NEXT_PUBLIC_ALLOW_CAMERA_FALLBACK=false
+```
+
+- DB 스키마·RLS·트리거·원자적 RPC·`checkins` Storage 버킷 정의는 [20261117000000_init_ongi_board.sql](file:///Users/yubin/Projects/ongi-board/supabase/migrations/20261117000000_init_ongi_board.sql) 에 포함되어 있습니다.
+- `service_role` 키는 Next.js 런타임이나 브라우저에 노출하지 않으며, 모든 요청은 로그인 사용자의 세션 + RLS + 최소 권한 `SECURITY DEFINER` RPC로 동작합니다.
 
 ## 실행 및 검증 명령어
 
@@ -61,11 +80,9 @@ npm run build
 npm start
 ```
 
-> **참고**: Node.js 내장 `node:sqlite` 모듈을 사용하므로 Node v22.5+ (본 프로젝트는 Node v26 기준 구성) 환경이 필요합니다.
+## Vercel & Capacitor 배포 안내
 
-## Capacitor (iOS / Android) 패키징 안내
-
-본 프로젝트는 `capacitor.config.ts`와 어댑터 분리를 통해 모바일 앱 패키징에 바로 대응할 수 있도록 구성되어 있습니다.
-
-1. **카메라 어댑터 교체**: `src/lib/camera-adapter.ts`의 웹 `getUserMedia` 캡처 함수를 `@capacitor/camera`의 `Camera.getPhoto({ source: CameraSource.Camera })` 호출로 교체하면 UI 컴포넌트(`LiveCameraModal.tsx`) 수정 없이 네이티브 카메라를 사용할 수 있습니다.
-2. **라이브 서버 연동 (API + SQLite 유지)**: Next.js 앱을 배포한 뒤 `capacitor.config.ts`의 `server.url`에 배포 주소를 지정하고 `npx cap add ios && npx cap add android && npx cap sync`를 실행하면 App Router API 및 SQLite 영속성을 그대로 사용하면서 네이티브 앱으로 패키징됩니다.
+1. **Vercel 배포**: GitHub 저장소 연결 후 프로젝트 환경변수에 `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_ALLOW_CAMERA_FALLBACK=false`를 등록하면 즉시 상용 배포됩니다. (Supabase Authentication → URL Configuration의 Site URL/Redirect URLs에 배포 도메인을 추가하세요.)
+2. **Capacitor (iOS / Android) 패키징**:
+   - `src/lib/camera-adapter.ts`의 웹 `getUserMedia` 캡처 함수를 `@capacitor/camera`의 `Camera.getPhoto({ source: CameraSource.Camera })` 호출로 교체하면 네이티브 카메라를 사용할 수 있습니다.
+   - `capacitor.config.ts`의 `server.url`에 배포된 Next.js 주소를 지정한 뒤 `npx cap add ios && npx cap add android && npx cap sync`를 실행합니다.

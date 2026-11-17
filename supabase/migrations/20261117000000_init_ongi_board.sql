@@ -403,13 +403,16 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.apply_room_eviction(TEXT, TEXT[], TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.sync_checkin_likes_count() FROM PUBLIC, anon, authenticated;
+
+REVOKE ALL ON FUNCTION public.apply_room_eviction(TEXT, TEXT[], TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.apply_room_eviction(TEXT, TEXT[], TEXT) TO authenticated;
 
-REVOKE ALL ON FUNCTION public.join_room_atomic(TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.join_room_atomic(TEXT, TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.join_room_atomic(TEXT, TEXT, TEXT) TO authenticated;
 
-REVOKE ALL ON FUNCTION public.apply_checkin_streak(TEXT, TEXT, INTEGER, TEXT, INTEGER, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.apply_checkin_streak(TEXT, TEXT, INTEGER, TEXT, INTEGER, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.apply_checkin_streak(TEXT, TEXT, INTEGER, TEXT, INTEGER, TEXT) TO authenticated;
 
 -- Storage bucket for live camera JPEG check-ins
