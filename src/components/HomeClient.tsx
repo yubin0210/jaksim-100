@@ -3,449 +3,139 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { BottomNav } from '@/components/BottomNav';
-import {
-  CameraIcon,
-  CheckIcon,
-  CloudIcon,
-  FlameIcon,
-  LogOutIcon,
-  SproutIcon,
-  SunIcon,
-} from '@/components/Icons';
-import { MiniPolaroid } from '@/components/MiniPolaroid';
+import { BottomNav } from './BottomNav';
+import { CheckIcon, LogOutIcon, SproutIcon } from './Icons';
+import { MiniPolaroid } from './MiniPolaroid';
 import type { RoomSummary, WeekRhythmDay } from '@/types/ongi';
 
-interface HomeClientProps {
+export function HomeClient({
+  initialMyRooms: rooms,
+  weekRhythm,
+  userNickname,
+}: {
   initialMyRooms: RoomSummary[];
   weekRhythm: WeekRhythmDay[];
   userNickname: string;
-}
-
-export function HomeClient({
-  initialMyRooms,
-  weekRhythm,
-  userNickname,
-}: HomeClientProps) {
+}) {
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
-
-  const handleLogout = async () => {
-    if (loggingOut) return;
+  const [error, setError] = useState('');
+  const pending = rooms.filter(
+    (room) => room.myStatusToday === 'pending'
+  ).length;
+  const today = weekRhythm.find((day) => day.isToday);
+  async function logout() {
     setLoggingOut(true);
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      router.push('/auth');
+      const result = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!result.ok) throw new Error();
+      router.replace('/auth');
       router.refresh();
+    } catch {
+      setError('로그아웃하지 못했어요. 다시 시도해 주세요.');
     } finally {
       setLoggingOut(false);
     }
-  };
-
+  }
   return (
-    <>
-      <div className="screen-scroll">
-        <header
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            gap: '10px',
-          }}
-        >
+    <div className="app-page">
+      <main className="journal-content">
+        <header className="page-title">
           <div>
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontSize: '0.74rem',
-                fontWeight: 600,
-                color: 'var(--ink-secondary)',
-                marginBottom: '3px',
-              }}
-            >
-              <SunIcon size={13} style={{ color: 'var(--accent-coral)' }} />
-              <span>{userNickname} 님, 오늘도 수고했어요</span>
-            </div>
-            <h1
-              style={{
-                fontSize: '1.22rem',
-                fontWeight: 800,
-                letterSpacing: '-0.025em',
-                lineHeight: 1.32,
-                color: 'var(--ink-primary)',
-              }}
-            >
-              오늘의 작은 한 걸음,
-              <br />
-              사진으로 남겨볼까요?
+            <p className="kicker">
+              {today?.date.replaceAll('-', '. ')} · {userNickname}님의 기록
+            </p>
+            <h1>
+              {!rooms.length
+                ? '누구와 함께 시작할까요?'
+                : pending
+                  ? '오늘의 내 방'
+                  : '오늘 기록을 다 남겼어요.'}
             </h1>
           </div>
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'flex-end',
-              gap: '5px',
-              flexShrink: 0,
-            }}
-          >
-            <div
-              style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border-soft)',
-                borderRadius: '999px',
-                padding: '5px 11px',
-                fontSize: '0.72rem',
-                fontWeight: 700,
-                color: 'var(--ink-secondary)',
-                whiteSpace: 'nowrap',
-                boxShadow: '0 3px 8px rgba(68, 48, 34, 0.04)',
-              }}
-            >
-              함께하는 방{' '}
-              <strong
-                className="serif-num"
-                style={{ color: 'var(--accent-coral)', fontSize: '0.84rem' }}
-              >
-                {initialMyRooms.length}
-              </strong>
-            </div>
-            <button
-              type="button"
-              onClick={handleLogout}
-              disabled={loggingOut}
-              aria-label="로그아웃"
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--border-soft)',
-                borderRadius: '999px',
-                padding: '3px 9px',
-                fontFamily: 'inherit',
-                fontSize: '0.64rem',
-                fontWeight: 700,
-                color: 'var(--ink-secondary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                cursor: loggingOut ? 'wait' : 'pointer',
-              }}
-            >
-              <LogOutIcon size={11} />
-              <span>{loggingOut ? '나가는 중...' : '로그아웃'}</span>
-            </button>
-          </div>
+          <button className="quiet" onClick={logout} disabled={loggingOut}>
+            <LogOutIcon />
+            로그아웃
+          </button>
         </header>
-
-        {/* Weekly Rhythm Strip */}
-        <section
-          aria-label="이번 주 내 인증 흐름"
-          className="card-ivory"
-          style={{
-            borderRadius: '18px',
-            padding: '10px 13px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '8px',
-          }}
-        >
-          <span
-            style={{
-              fontSize: '0.72rem',
-              fontWeight: 700,
-              color: 'var(--ink-secondary)',
-            }}
-          >
-            이번 주 흐름
-          </span>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            {weekRhythm.map(day => (
-              <div
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <section className="week-strip">
+          <h2>이번 주 기록</h2>
+          <ol>
+            {weekRhythm.map((day) => (
+              <li
                 key={day.date}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '3px',
-                  fontSize: '0.62rem',
-                  fontWeight: 700,
-                  color: day.isToday ? 'var(--accent-coral)' : 'var(--ink-muted)',
-                }}
+                className={day.isToday ? 'today' : ''}
+                aria-label={day.date + (day.done ? ' 기록 완료' : ' 기록 없음')}
               >
                 <span>{day.label}</span>
-                <span
-                  style={{
-                    width: '17px',
-                    height: '17px',
-                    borderRadius: '50%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: day.done
-                      ? 'var(--accent-sage)'
-                      : day.isToday
-                        ? 'var(--accent-coral-soft)'
-                        : 'var(--surface-tint)',
-                    color: day.done ? '#fff' : 'var(--accent-coral)',
-                    border:
-                      !day.done && day.isToday
-                        ? '1.5px dashed var(--accent-coral)'
-                        : 'none',
-                  }}
-                >
-                  {day.done ? <CheckIcon size={10} /> : null}
-                </span>
-              </div>
+                <i className={day.done ? 'done' : ''}>
+                  {day.done ? <CheckIcon /> : '·'}
+                </i>
+              </li>
+            ))}
+          </ol>
+        </section>
+        <div className="section-heading">
+          <h2>
+            함께하는 방 <small>{rooms.length}</small>
+          </h2>
+          <Link href="/explore">방 둘러보기 →</Link>
+        </div>
+        {rooms.length ? (
+          <div className="room-list">
+            {rooms.map((room) => (
+              <Link
+                className="room-card"
+                key={room.id}
+                href={'/rooms/' + room.id}
+              >
+                <div className="room-row">
+                  <MiniPolaroid tiles={room.previewTiles} />
+                  <div className="room-info">
+                    <p className="kicker">
+                      {room.tag} · 연속 {room.streakDays}일
+                    </p>
+                    <h3>{room.title}</h3>
+                  </div>
+                </div>
+                <div className="progress-line">
+                  <span>
+                    {room.completedCount}/{room.memberCount}명 기록
+                  </span>
+                  <span>{room.completionPercent}%</span>
+                </div>
+                <progress
+                  value={room.completionPercent}
+                  max={100}
+                  aria-label="오늘 방 달성률"
+                />
+                <p className="room-action">
+                  {room.myStatusToday === 'pending'
+                    ? '오늘 사진 남기기 →'
+                    : room.myStatusToday === 'rest'
+                      ? '오늘은 쉬어가는 날'
+                      : '오늘 기록 보기 →'}
+                </p>
+              </Link>
             ))}
           </div>
-        </section>
-
-        {/* Joined Rooms Stack */}
-        {initialMyRooms.length === 0 ? (
-          <div
-            className="card-ivory"
-            style={{
-              padding: '28px 18px',
-              textAlign: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '10px',
-            }}
-          >
-            <div
-              style={{
-                width: '46px',
-                height: '46px',
-                borderRadius: '50%',
-                background: 'var(--accent-sage-soft)',
-                color: 'var(--accent-sage)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <SproutIcon size={22} />
-            </div>
-            <p style={{ fontSize: '0.88rem', fontWeight: 700 }}>
-              아직 참여 중인 자기계발 방이 없어요
-            </p>
-            <p style={{ fontSize: '0.76rem', color: 'var(--ink-secondary)' }}>
-              관심 있는 주제의 소규모 방에 들어가 오늘의 조각을 남겨보세요.
-            </p>
-            <Link
-              href="/explore"
-              style={{
-                marginTop: '4px',
-                background: 'var(--accent-coral)',
-                color: '#fff',
-                textDecoration: 'none',
-                fontSize: '0.78rem',
-                fontWeight: 700,
-                padding: '9px 16px',
-                borderRadius: '999px',
-              }}
-            >
-              다정한 방 찾아보기
-            </Link>
-          </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '11px' }}>
-            {initialMyRooms.map((room, idx) => {
-              const isPending = room.myStatusToday === 'pending';
-              const isDone = room.myStatusToday === 'photo';
-              const fillClass =
-                room.completionPercent === 100
-                  ? 'fill-sage'
-                  : room.completionPercent < 50
-                    ? 'fill-honey'
-                    : 'fill-coral';
-
-              return (
-                <Link
-                  key={room.id}
-                  href={`/rooms/${room.id}`}
-                  className="card-ivory animate-fade-up"
-                  style={{
-                    textDecoration: 'none',
-                    color: 'inherit',
-                    padding: '13px 14px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    animationDelay: `${idx * 0.05}s`,
-                    borderColor: isPending ? '#F0C0AF' : 'var(--border-soft)',
-                    background: isPending
-                      ? 'linear-gradient(165deg, #FFFDF9 0%, #FFF6F0 100%)'
-                      : 'var(--surface)',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      gap: '10px',
-                    }}
-                  >
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          marginBottom: '4px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: '0.68rem',
-                            fontWeight: 700,
-                            color: 'var(--ink-secondary)',
-                          }}
-                        >
-                          {room.tag}
-                        </span>
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                            background: 'var(--accent-honey-soft)',
-                            color: '#9A640E',
-                            padding: '2px 7px',
-                            borderRadius: '999px',
-                            fontSize: '0.66rem',
-                            fontWeight: 700,
-                          }}
-                        >
-                          <FlameIcon size={11} />
-                          <span className="serif-num">Day {room.streakDays}</span>
-                        </span>
-                      </div>
-                      <h2
-                        style={{
-                          fontSize: '0.96rem',
-                          fontWeight: 800,
-                          letterSpacing: '-0.02em',
-                          color: 'var(--ink-primary)',
-                          marginBottom: '7px',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {room.title}
-                      </h2>
-
-                      {isPending && (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            background: 'var(--accent-coral)',
-                            color: '#fff',
-                            fontSize: '0.69rem',
-                            fontWeight: 700,
-                            padding: '4px 10px',
-                            borderRadius: '999px',
-                            boxShadow: '0 3px 9px rgba(238, 99, 72, 0.24)',
-                          }}
-                        >
-                          <CameraIcon size={12} />
-                          <span>오늘 나의 순간 남기기</span>
-                        </span>
-                      )}
-
-                      {isDone && (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            background: 'var(--accent-sage-soft)',
-                            color: '#39724B',
-                            fontSize: '0.69rem',
-                            fontWeight: 700,
-                            padding: '4px 10px',
-                            borderRadius: '999px',
-                          }}
-                        >
-                          <CheckIcon size={12} />
-                          <span>오늘 인증 완료</span>
-                        </span>
-                      )}
-
-                      {room.myStatusToday === 'rest' && (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            background: 'var(--accent-honey-soft)',
-                            color: '#8E5F12',
-                            fontSize: '0.69rem',
-                            fontWeight: 700,
-                            padding: '4px 10px',
-                            borderRadius: '999px',
-                          }}
-                        >
-                          <CloudIcon size={12} />
-                          <span>오늘 휴식권 사용</span>
-                        </span>
-                      )}
-                    </div>
-
-                    <MiniPolaroid tiles={room.previewTiles} />
-                  </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'baseline',
-                        fontSize: '0.69rem',
-                        color: 'var(--ink-secondary)',
-                      }}
-                    >
-                      <span>
-                        {room.completionPercent === 100
-                          ? `모두 도착했어요! (${room.completedCount}/${room.memberCount}명)`
-                          : `오늘 ${room.completedCount}/${room.memberCount}명이 온기를 채웠어요`}
-                      </span>
-                      <span
-                        className="serif-num"
-                        style={{
-                          fontSize: '0.84rem',
-                          fontWeight: 700,
-                          color:
-                            room.completionPercent === 100
-                              ? 'var(--accent-sage)'
-                              : 'var(--ink-primary)',
-                        }}
-                      >
-                        {room.completionPercent}%
-                      </span>
-                    </div>
-                    <div className="prog-track">
-                      <div
-                        className={`prog-fill ${fillClass}`}
-                        style={{ width: `${room.completionPercent}%` }}
-                      />
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
+          <section className="empty-paper">
+            <SproutIcon size={34} />
+            <h3>아직 함께하는 방이 없어요.</h3>
+            <p>해보고 싶었던 일로 방을 찾아보세요. 오늘 멤버들이 무엇을 했는지 볼 수 있어요.</p>
+            <Link className="primary" href="/explore">
+              내게 맞는 방 찾기
+            </Link>
+          </section>
         )}
-      </div>
-
+      </main>
       <BottomNav active="home" />
-    </>
+    </div>
   );
 }

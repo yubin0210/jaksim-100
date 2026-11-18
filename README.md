@@ -1,4 +1,4 @@
-# 온기보드 (Ongi Board)
+# 작심백일
 
 서로의 오늘 한 걸음을 **실시간 인앱 폴라로이드 사진 + 짧은 한마디**로 나누는 소규모(2~6명) 자기계발 인증 보드 웹앱입니다.
 
@@ -19,7 +19,7 @@
 - **Framework**: Next.js 16 (App Router, React 19, TypeScript)
 - **Backend & Auth**: Supabase (`Auth`, `PostgreSQL` + RLS + Atomic RPCs, `Storage`)
 - **Testing**: Vitest (`tests/domain.test.ts`, `tests/repository.test.ts`, `tests/api.test.ts`, `tests/ui-guards.test.ts`)
-- **Design System**: Cozy Daylight (`#F4EDE2` Warm Oat, `#FAF6F0` Warm Milk, `#FFFDF9` Cream Ivory, `#EE6348` Persimmon Coral, `#F2A93B` Marigold Honey, `#4F9866` Clover Sage, `Pretendard Variable` × `Fraunces`, 2px 둥근 선형 SVG 아이콘)
+- **Design System**: 크림색 바탕과 테라코타·세이지 강조색, 시스템 한글 명조 제목과 고딕 본문을 사용합니다. 세로 한 열과 하단 탭을 기본으로 하며 넓은 화면에서도 같은 모바일 구성을 보여줍니다.
 - **Mobile Packaging Ready**: `capacitor.config.ts` 및 분리된 카메라 어댑터(`src/lib/camera-adapter.ts`)
 
 ### 디렉터리 구조
@@ -57,7 +57,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-publishable-or-anon-key
 NEXT_PUBLIC_ALLOW_CAMERA_FALLBACK=false
 ```
 
-- DB 스키마·RLS·트리거·원자적 RPC·`checkins` Storage 버킷 정의는 [20261117000000_init_ongi_board.sql](file:///Users/yubin/Projects/ongi-board/supabase/migrations/20261117000000_init_ongi_board.sql) 에 포함되어 있습니다.
+- 기존 DB에는 [사진·프로필 권한 마이그레이션](supabase/migrations/20261118000000_private_checkin_storage.sql)을 앱 업데이트와 함께 적용하세요. 새 설치는 [초기 스키마](supabase/migrations/20261117000000_init_ongi_board.sql)부터 시간순으로 적용합니다.
+- 사진은 로그인한 사용자가 방 보드·미리보기·관련 방 기록에서 열람합니다. 앱은 인증된 이미지 경로를 사용하며 기존 공개 URL 형식의 DB 레코드도 읽습니다. 스토리지의 직접 공개 접근과 다른 회원 이메일 조회는 위 SQL을 적용해야 제한됩니다.
 - `service_role` 키는 Next.js 런타임이나 브라우저에 노출하지 않으며, 모든 요청은 로그인 사용자의 세션 + RLS + 최소 권한 `SECURITY DEFINER` RPC로 동작합니다.
 
 ## 실행 및 검증 명령어

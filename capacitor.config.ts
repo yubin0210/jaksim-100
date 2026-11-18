@@ -19,7 +19,7 @@ export interface CapacitorConfig {
 
 const config: CapacitorConfig = {
   appId: 'com.ongiboard.app',
-  appName: '온기보드',
+  appName: '작심백일',
   webDir: 'out',
   server: {
     androidScheme: 'https',

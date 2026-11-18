@@ -48,6 +48,10 @@ interface DbCheckinRow {
   created_at: string;
 }
 
+function photoUrl(checkinId: string): string {
+  return '/api/checkins/' + encodeURIComponent(checkinId) + '/photo';
+}
+
 function mapRoom(r: DbRoomRow): Room {
   return {
     id: r.id,
@@ -91,7 +95,7 @@ function mapCheckin(
     isCurrentUser: c.user_id === currentUserId,
     checkinDate: c.checkin_date,
     status: c.status,
-    imageData: c.image_data,
+    imageData: c.image_data ? photoUrl(c.id) : null,
     note: c.note,
     timestampLabel: c.timestamp_label,
     likesCount: c.likes_count,
@@ -316,8 +320,7 @@ export function createSupabaseOngiStore(): OngiStore {
         });
       if (error) throw new Error(error.message);
 
-      const { data } = supabase.storage.from('checkins').getPublicUrl(objectPath);
-      return data.publicUrl;
+      return objectPath;
     },
 
     async insertCheckin(params) {
@@ -376,8 +379,9 @@ export function createSupabaseOngiStore(): OngiStore {
       const supabase = await createServerSupabaseClient();
       const { data: existingRow, error: fetchError } = await supabase
         .from('daily_checkins')
-        .select('id')
+        .select('id, checkin_likes(user_id)')
         .eq('id', checkinId)
+        .eq('checkin_likes.user_id', userId)
         .maybeSingle();
 
       if (fetchError) throw new Error(fetchError.message);
@@ -385,17 +389,8 @@ export function createSupabaseOngiStore(): OngiStore {
         return { ok: false, status: 404, error: '인증 기록을 찾을 수 없어요.' };
       }
 
-      const { data: existingLike, error: likeCheckError } = await supabase
-        .from('checkin_likes')
-        .select('checkin_id')
-        .eq('checkin_id', checkinId)
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (likeCheckError) throw new Error(likeCheckError.message);
-
-      const willLike = !existingLike;
-      if (existingLike) {
+      const willLike = existingRow.checkin_likes.length === 0;
+      if (!willLike) {
         const { error: delError } = await supabase
           .from('checkin_likes')
           .delete()
@@ -496,7 +491,7 @@ export function createSupabaseOngiStore(): OngiStore {
           tag: r.rooms.tag,
           checkinDate: r.checkin_date,
           status: r.status,
-          imageData: r.image_data,
+          imageData: r.image_data ? photoUrl(r.id) : null,
           note: r.note,
           timestampLabel: r.timestamp_label,
           likesCount: r.likes_count,
@@ -555,7 +550,7 @@ export function createSupabaseOngiStore(): OngiStore {
           roomTitle: r.rooms.title,
           tag: r.rooms.tag,
           nickname: r.author_nickname,
-          imageData: r.image_data,
+          imageData: photoUrl(r.id),
           note: r.note,
           timestampLabel: r.timestamp_label,
         })

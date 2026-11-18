@@ -646,7 +646,7 @@ export async function submitPhotoCheckin(
     (input.timestampLabel || '').trim() || formatCurrentTimeLabel();
   const createdAt = new Date().toISOString();
 
-  const publicUrl = await store.uploadCheckinImage({
+  const imagePath = await store.uploadCheckinImage({
     userId: user.id,
     roomId,
     checkinId,
@@ -664,7 +664,7 @@ export async function submitPhotoCheckin(
     authorAvatarInitial: me.avatarInitial,
     checkinDate: today,
     status: 'photo',
-    imageData: publicUrl,
+    imageData: imagePath,
     note,
     timestampLabel,
     createdAt,

@@ -31,6 +31,7 @@ export async function POST(req: Request) {
     email,
     password,
     options: {
+      emailRedirectTo: new URL('/auth/callback', process.env.APP_ORIGIN || req.url).href,
       data: { nickname },
     },
   });

@@ -102,7 +102,7 @@ export function captureFromStreamWithStamp(
   } else if (fallbackCanvas) {
     ctx.drawImage(fallbackCanvas, 0, 0, width, height);
   } else {
-    paintWarmAmbientPreview(canvas, 0.6, meta.tag);
+    return '';
   }
 
   // Soft bottom gradient for readable timestamp stamp

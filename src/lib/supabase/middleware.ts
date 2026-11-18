@@ -2,6 +2,16 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function updateSession(request: NextRequest): Promise<NextResponse> {
+  const { pathname, searchParams } = request.nextUrl;
+  if (pathname === '/auth/callback') return NextResponse.next();
+
+  // Older confirmation emails return to the Site URL with the code in its query.
+  if (pathname === '/' && (searchParams.has('code') || searchParams.has('error'))) {
+    const callback = request.nextUrl.clone();
+    callback.pathname = '/auth/callback';
+    return NextResponse.rewrite(callback);
+  }
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -29,8 +39,6 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
 
   if (pathname.startsWith('/api/auth')) {
     return supabaseResponse;
@@ -61,6 +69,7 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = '/auth';
     redirectUrl.search = '';
+    if (/^\/(?:rooms\/[\w-]+|explore|album)$/.test(pathname)) redirectUrl.searchParams.set('next', pathname);
     const redirectResponse = NextResponse.redirect(redirectUrl);
     supabaseResponse.cookies.getAll().forEach(c => redirectResponse.cookies.set(c));
     return redirectResponse;
